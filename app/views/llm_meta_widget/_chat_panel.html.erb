@@ -1,0 +1,422 @@
+<%# Chat-panel widget for the client-orchestrated flow. Render via the %>
+<%# llm_meta_widget helper — see llm_meta_widget_helper.rb for options. %>
+<%# %>
+<%# Required locals: base_url, model. %>
+<%# Optional locals (helper defaults): %>
+<%#   api_key_uuid, orchestrator_path, actions_schema_id, state_global, %>
+<%#   actions_global, remote_tools_schema_id, well_known_urls, max_rounds. %>
+<%# %>
+<%# The host page must ALSO provide: %>
+<%#   (a) a JSON schema block with id = actions_schema_id, listing the %>
+<%#       local action set (name/description/input_schema each). %>
+<%#   (b) window.aiState — reader functions called each turn. %>
+<%#   (c) window.aiActions — action implementations invoked after the LLM %>
+<%#       turn completes. %>
+<%# %>
+<%# NOTE on ERB comments: DO NOT consolidate these lines into one <%_# ... %_> %>
+<%# block. Rails-ERB comment blocks terminate at the FIRST closing `%_>`, so %>
+<%# any nested <%_= ... %_> inside cuts them short and the trailing lines leak %>
+<%# into rendered HTML — including any literal `<script>` text, which then %>
+<%# swallows the widget div. One line per comment keeps them self-terminating. %>
+
+<style>
+	/* Match llm_meta_chat's chat.css palette + bubble style so the widget
+	 * reads visually as reuse of the same infrastructure. Container is
+	 * floating (position: fixed) — the ONLY departure from the full-page
+	 * chat layout that llm_meta_chat uses.
+	 */
+	#llm-meta-widget-chat {
+		position: fixed; bottom: 1em; right: 1em;
+		width: 28em; max-height: 70vh;
+		background: #ffffff;
+		border: 1px solid #e5e7eb;
+		border-radius: 8px;
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+		padding: 10px;
+		z-index: 9999;
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+		font-size: 14px;
+		color: #1f2937;
+		display: flex; flex-direction: column;
+	}
+	#llm-meta-widget-chat .lmw-header {
+		display: flex; justify-content: space-between; align-items: center;
+		padding-bottom: 8px; margin-bottom: 8px;
+		border-bottom: 2px solid #e5e7eb;
+	}
+	#llm-meta-widget-chat .lmw-title { font-weight: 600; color: #1f2937; }
+	#llm-meta-widget-chat .lmw-clear {
+		background: #ef4444; color: white; border: none;
+		padding: 4px 10px; border-radius: 6px; cursor: pointer;
+		font: inherit; font-size: 12px;
+		transition: background-color 0.15s;
+	}
+	#llm-meta-widget-chat .lmw-clear:hover { background: #dc2626; }
+
+	#llm-meta-widget-chat .lmw-messages {
+		flex: 1; overflow-y: auto;
+		padding: 10px;
+		background-color: #f9fafb;
+		border-radius: 8px;
+		margin-bottom: 8px;
+		min-height: 6em; max-height: 50vh;
+	}
+	#llm-meta-widget-chat .lmw-messages::-webkit-scrollbar { width: 8px; }
+	#llm-meta-widget-chat .lmw-messages::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 4px; }
+	#llm-meta-widget-chat .lmw-messages::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+	#llm-meta-widget-chat .lmw-messages::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+	#llm-meta-widget-chat .lmw-message {
+		position: relative;
+		margin-bottom: 6px;
+		padding: 6px 10px;
+		border-radius: 8px;
+		max-width: 85%;
+		line-height: 1.4;
+		word-wrap: break-word;
+	}
+	#llm-meta-widget-chat .lmw-message.user {
+		background-color: #dbeafe;
+		border: 1px solid #bfdbfe;
+		margin-left: auto;
+	}
+	#llm-meta-widget-chat .lmw-message.assistant {
+		background-color: #ffffff;
+		border: 1px solid #e5e7eb;
+		margin-right: auto;
+	}
+	#llm-meta-widget-chat .lmw-message.system {
+		background-color: #fef3c7;
+		border: 1px solid #fde68a;
+		color: #78350f;
+		font-size: 0.9em;
+		font-style: italic;
+	}
+	#llm-meta-widget-chat .lmw-message.error {
+		background-color: #fee2e2;
+		border: 1px solid #fecaca;
+		color: #991b1b;
+	}
+	#llm-meta-widget-chat .lmw-role {
+		display: block;
+		font-weight: 600;
+		font-size: 13px;
+		color: #374151;
+		margin-bottom: 4px;
+	}
+	#llm-meta-widget-chat .lmw-content { line-height: 1.4; word-wrap: break-word; }
+
+	/* Thinking block — same shape as llm_meta_chat's .message-thinking */
+	#llm-meta-widget-chat .lmw-thinking {
+		margin: 0.5em 0;
+		padding: 0.5em 0.75em;
+		background: #f3f4f6;
+		border-left: 3px solid #9ca3af;
+		border-radius: 4px;
+		font-size: 0.85em;
+	}
+	#llm-meta-widget-chat .lmw-thinking summary {
+		cursor: pointer;
+		color: #6b7280;
+		font-weight: 500;
+		user-select: none;
+	}
+	#llm-meta-widget-chat .lmw-thinking .lmw-thinking-body {
+		margin-top: 0.5em;
+		color: #4b5563;
+		white-space: pre-wrap;
+		font-family: ui-monospace, "SF Mono", monospace;
+		font-size: 0.9em;
+		line-height: 1.5;
+		max-height: 10em;
+		overflow-y: auto;
+	}
+
+	/* Input area — mirrors llm_meta_chat's .chat-input-container +
+	 * .chat-input + .send-button so it reads as the same UI. Multi-line
+	 * textarea with an absolutely-positioned paper-plane send button
+	 * (SVG inlined so no external icon-font dep). */
+	#llm-meta-widget-chat .lmw-input-container {
+		background-color: white;
+		border: 2px solid #e5e7eb;
+		border-radius: 8px;
+		padding: 8px;
+	}
+	#llm-meta-widget-chat .lmw-form { display: flex; flex-direction: column; gap: 8px; }
+	#llm-meta-widget-chat .lmw-input-wrapper { position: relative; flex: 1; }
+	#llm-meta-widget-chat .lmw-input {
+		width: 100%;
+		padding: 10px 48px 10px 10px;
+		border: 1px solid #d1d5db;
+		border-radius: 6px;
+		font-size: 14px;
+		font-family: inherit;
+		resize: vertical;
+		min-height: 44px;
+		box-sizing: border-box;
+		transition: border-color 0.2s, box-shadow 0.2s;
+	}
+	#llm-meta-widget-chat .lmw-input:focus {
+		outline: none;
+		border-color: #3b82f6;
+		box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+	}
+	#llm-meta-widget-chat .lmw-send {
+		position: absolute;
+		bottom: 6px;
+		right: 6px;
+		background-color: #3b82f6;
+		color: white;
+		border: none;
+		width: 32px;
+		height: 32px;
+		padding: 0;
+		border-radius: 6px;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		transition: background-color 0.15s, opacity 0.15s;
+	}
+	#llm-meta-widget-chat .lmw-send:hover { background-color: #2563eb; }
+	#llm-meta-widget-chat .lmw-send:disabled { opacity: 0.5; cursor: not-allowed; }
+	#llm-meta-widget-chat .lmw-send svg { display: block; }
+</style>
+
+<div id="llm-meta-widget-chat">
+	<div class="lmw-header">
+		<span class="lmw-title">AI assistant</span>
+		<button type="button" class="lmw-clear" title="Clear conversation">clear</button>
+	</div>
+	<div class="lmw-messages"></div>
+	<div class="lmw-input-container">
+		<form class="lmw-form">
+			<div class="lmw-input-wrapper">
+				<textarea class="lmw-input" placeholder="Enter your message..." rows="2" autocomplete="off"></textarea>
+				<button type="submit" class="lmw-send" title="Send message">
+					<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+						<path d="M15.964.686a.5.5 0 0 0-.65-.65L.293 6.011a.513.513 0 0 0 .002.947l4.708 1.878 8.94-6.94-6.94 8.94 1.879 4.708c.163.407.756.416.951.016l6.13-13.884Z"/>
+					</svg>
+				</button>
+			</div>
+		</form>
+	</div>
+</div>
+
+<script type="module">
+	import { runChatLoop, fetchMcpManifest } from "<%= orchestrator_path %>";
+
+	var META_BASE              = <%= base_url.to_json.html_safe %>;
+	var API_KEY_UUID           = <%= api_key_uuid.to_json.html_safe %>;
+	var MODEL                  = <%= model.to_json.html_safe %>;
+	var ACTIONS_SCHEMA_ID      = <%= actions_schema_id.to_json.html_safe %>;
+	var STATE_GLOBAL           = <%= state_global.to_json.html_safe %>;
+	var ACTIONS_GLOBAL         = <%= actions_global.to_json.html_safe %>;
+	var REMOTE_TOOLS_SCHEMA_ID = <%= remote_tools_schema_id.to_json.html_safe %>;
+	var MAX_ROUNDS             = <%= max_rounds.to_json.html_safe %>;
+	var WELL_KNOWN_URLS        = <%= raw(well_known_urls.nil? ? "null" : well_known_urls.to_json) %>;
+
+	var root       = document.getElementById("llm-meta-widget-chat");
+	var historyEl  = root.querySelector(".lmw-messages");
+	var formEl     = root.querySelector(".lmw-form");
+	var inputEl    = root.querySelector(".lmw-input");
+	var clearBtn   = root.querySelector(".lmw-clear");
+
+	var conversation = [];  // [{role, content}, ...] — grows across turns
+	var actionsSchemaEl = document.getElementById(ACTIONS_SCHEMA_ID);
+	var localTools = actionsSchemaEl ? JSON.parse(actionsSchemaEl.textContent) : [];
+	var remoteToolsEl = document.getElementById(REMOTE_TOOLS_SCHEMA_ID);
+	var remoteTools = remoteToolsEl ? JSON.parse(remoteToolsEl.textContent) : [];
+
+	// Fetch well-known MCP manifests at boot. Auto-discovers same origin
+	// if WELL_KNOWN_URLS is null; empty array disables entirely.
+	var hostWideTools = [];
+	var wellKnownReady = (async function() {
+		var urls = WELL_KNOWN_URLS === null
+			? [ window.location.origin + "/.well-known/mcp.json" ]
+			: WELL_KNOWN_URLS;
+		for (var i = 0; i < urls.length; i++) {
+			var tools = await fetchMcpManifest(urls[i]);
+			hostWideTools = hostWideTools.concat(tools);
+		}
+	})();
+
+	function appendTurn(role, text) {
+		var div = document.createElement("div");
+		div.className = "lmw-message " + role;
+		var label = document.createElement("div");
+		label.className = "lmw-role";
+		label.textContent = roleLabel(role);
+		var body = document.createElement("div");
+		body.className = "lmw-content";
+		body.textContent = text;
+		div.appendChild(label);
+		div.appendChild(body);
+		historyEl.appendChild(div);
+		historyEl.scrollTop = historyEl.scrollHeight;
+		return body;
+	}
+
+	// Role labels mirror llm_meta_chat's chats/_message.html.erb:
+	//   user      → "👤 You"
+	//   assistant → "🤖 <model>"
+	// so the widget reads as the same UI as the full chat host.
+	function roleLabel(role) {
+		if (role === "user")      return "👤 You";
+		if (role === "assistant") return "🤖 " + MODEL;
+		if (role === "system")    return "• system";
+		if (role === "error")     return "⚠ error";
+		return role;
+	}
+
+	var currentThinkingBlock = null;
+	var currentThinkingBody  = null;
+
+	function ensureThinkingBlock() {
+		if (currentThinkingBody) return currentThinkingBody;
+		var details = document.createElement("details");
+		details.className = "lmw-thinking";
+		details.open = true;
+		var summary = document.createElement("summary");
+		summary.textContent = "🤔 thinking…";
+		var body = document.createElement("div");
+		body.className = "lmw-thinking-body";
+		details.appendChild(summary);
+		details.appendChild(body);
+		historyEl.appendChild(details);
+		historyEl.scrollTop = historyEl.scrollHeight;
+		currentThinkingBlock = details;
+		currentThinkingBody  = body;
+		return body;
+	}
+
+	function collapseThinkingBlock() {
+		if (currentThinkingBlock) {
+			currentThinkingBlock.open = false;
+			var summary = currentThinkingBlock.querySelector("summary");
+			if (summary) summary.textContent = "🤔 thinking (finished)";
+		}
+		currentThinkingBlock = null;
+		currentThinkingBody  = null;
+	}
+
+	function currentPageState() {
+		var reader = window[STATE_GLOBAL] || {};
+		var out = {};
+		Object.keys(reader).forEach(function(k) {
+			try { out[k] = reader[k](); } catch (e) { out[k] = "<error: " + e.message + ">"; }
+		});
+		return out;
+	}
+
+	function currentSystemPrompt() {
+		return [
+			"You are integrated into a web page as an AI assistant. You have tools available to change page state or fetch information.",
+			"",
+			"RULES for tool use:",
+			"1. When a state change or data fetch is needed, invoke the matching tool via a function call. Do not describe the intent in text without invoking (a textual promise like \"I will add X\" is a failure).",
+			"2. After ANY tool has returned a result (visible in the conversation history as a role:tool message), YOUR NEXT MESSAGE MUST BE A PLAIN-TEXT ANSWER using that result. DO NOT emit another tool call.",
+			"3. Especially: NEVER call the SAME tool twice in a row with the same or similar arguments — its earlier result is already in the conversation history. If you need to reference it, read it from there.",
+			"4. Only call an additional tool if the user's request TRULY requires more work that isn't covered by prior results (rare — most requests need one tool call and a synthesis).",
+			"",
+			"Current page state:",
+			JSON.stringify(currentPageState(), null, 2)
+		].join("\n");
+	}
+
+	// Per-turn AbortController — lets the Clear button (or a new submit)
+	// terminate an in-flight runChatLoop.
+	var currentAbort = null;
+
+	clearBtn.addEventListener("click", function() {
+		if (currentAbort) { try { currentAbort.abort(); } catch (e) { /* noop */ } }
+		conversation = [];
+		historyEl.innerHTML = "";
+	});
+
+	// Enter submits, Shift+Enter inserts a newline — matches llm_meta_chat's
+	// input UX so users can type multi-line prompts without accidentally
+	// firing the form.
+	inputEl.addEventListener("keydown", function(e) {
+		if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+			e.preventDefault();
+			if (typeof formEl.requestSubmit === "function") formEl.requestSubmit();
+			else formEl.dispatchEvent(new Event("submit", { cancelable: true }));
+		}
+	});
+
+	formEl.addEventListener("submit", async function(e) {
+		e.preventDefault();
+		var userText = inputEl.value.trim();
+		if (!userText) return;
+		inputEl.value = "";
+		appendTurn("user", userText);
+
+		if (currentAbort) { try { currentAbort.abort(); } catch (e) { /* noop */ } }
+		currentAbort = new AbortController();
+
+		var messages = [{ role: "system", content: currentSystemPrompt() }]
+			.concat(conversation)
+			.concat([{ role: "user", content: userText }]);
+
+		var assistantBody = appendTurn("assistant", "");
+
+		try {
+			await wellKnownReady;
+
+			var result = await runChatLoop({
+				baseUrl:       META_BASE,
+				apiKeyUuid:    API_KEY_UUID,
+				modelName:     MODEL,
+				messages:      messages,
+				localTools:    localTools,
+				remoteTools:   remoteTools,
+				hostWideTools: hostWideTools,
+				aiActions:     window[ACTIONS_GLOBAL] || {},
+				maxRounds:     MAX_ROUNDS,
+				signal:        currentAbort.signal,
+				onRoundStart: function(roundIdx) {
+					if (roundIdx > 0) {
+						appendTurn("system", "🔄 round " + (roundIdx + 1) + " — synthesizing with tool results");
+						assistantBody = appendTurn("assistant", "");
+					}
+					collapseThinkingBlock();
+				},
+				onThinkingDelta: function(delta) {
+					var body = ensureThinkingBlock();
+					body.appendChild(document.createTextNode(delta));
+					body.scrollTop = body.scrollHeight;
+					historyEl.scrollTop = historyEl.scrollHeight;
+				},
+				onTextDelta: function(delta) {
+					collapseThinkingBlock();
+					assistantBody.textContent += delta;
+					historyEl.scrollTop = historyEl.scrollHeight;
+				}
+			});
+			conversation.push({ role: "user",      content: userText });
+			conversation.push({ role: "assistant", content: result.content });
+			if (result.dispatched.length > 0) {
+				var summary = result.dispatched.map(function(d) {
+					return d.error ? "❌ " + d.toolCall.name + ": " + d.error.message : "✔ " + d.toolCall.name;
+				}).join(", ");
+				appendTurn("system", "Actions: " + summary);
+			}
+			if (result.skipped.length > 0) {
+				appendTurn("system", "Skipped (no handler): " +
+					result.skipped.map(function(t) { return t.name; }).join(", "));
+			}
+			if (result.stopped_reason) {
+				appendTurn("system", "⚠ " + result.stopped_reason);
+			}
+		} catch (err) {
+			if (err.name === "AbortError" || /aborted/i.test(err.message || "")) {
+				appendTurn("system", "⏹ stopped");
+			} else {
+				appendTurn("error", err.message);
+			}
+		} finally {
+			currentAbort = null;
+		}
+	});
+</script>
