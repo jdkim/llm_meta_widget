@@ -356,6 +356,34 @@ export async function runChatLoop(opts) {
   const allSkipped = []
   let lastResult = null
 
+  // Client-side de-dupe guard. Weak tool-use models (Ollama qwen3, some
+  // Anthropic Haiku variants) will re-invoke the same tool with the same
+  // arguments after receiving its result, instead of synthesizing a text
+  // answer. Track every (name, args-JSON) tuple we've already dispatched
+  // this loop; when the LLM emits a duplicate, skip it. A round in which
+  // ALL tool_calls are duplicates has nothing left to dispatch — treat as
+  // the LLM's implicit "I'm done" and terminate with a distinct reason
+  // (widget can render silently since the earlier round already produced
+  // whatever text/action the user gets).
+  const seenToolCalls = new Set()
+  const toolKey = (tc) => {
+    let args
+    try { args = coerceArguments(tc.arguments) } catch { args = tc.arguments }
+    let serialized
+    try {
+      // Stable-order stringify — sort top-level keys so semantically-
+      // equivalent tool_calls (same content, different key order in the
+      // LLM's emission) hash to the same string.
+      if (args && typeof args === "object" && !Array.isArray(args)) {
+        const sorted = Object.keys(args).sort().reduce((o, k) => { o[k] = args[k]; return o }, {})
+        serialized = JSON.stringify(sorted)
+      } else {
+        serialized = JSON.stringify(args)
+      }
+    } catch { serialized = String(args) }
+    return tc.name + "" + serialized
+  }
+
   for (let round = 0; round < maxRounds; round++) {
     // Bail immediately on external abort — don't start a new LLM turn if
     // the user hit Clear / navigated away between rounds.
@@ -377,16 +405,38 @@ export async function runChatLoop(opts) {
 
     // Classify tool_calls by class. Precedence: Class 3 (aiActions, no
     // network, same-page) → Class 2 (host-wide well-known, direct MCP) →
-    // Class 1 (hub-registered, meta-server proxy) → unknown.
-    const localCalls    = []  // Class 3
-    const hostWideCalls = []  // Class 2
-    const remoteCalls   = []  // Class 1
-    const unknownCalls  = []
+    // Class 1 (hub-registered, meta-server proxy) → unknown. Duplicates
+    // of prior rounds are filtered first — see seenToolCalls above.
+    const localCalls     = []  // Class 3
+    const hostWideCalls  = []  // Class 2
+    const remoteCalls    = []  // Class 1
+    const unknownCalls   = []
+    const duplicateCalls = []
+    const emittedCount   = (turnResult.toolCalls || []).length
     for (const tc of turnResult.toolCalls || []) {
+      const key = toolKey(tc)
+      if (seenToolCalls.has(key)) { duplicateCalls.push(tc); continue }
+      seenToolCalls.add(key)
       if      (typeof aiActions[tc.name] === "function") localCalls.push(tc)
       else if (hostWideByName[tc.name])                  hostWideCalls.push(tc)
       else if (remoteByName[tc.name])                    remoteCalls.push(tc)
       else                                                unknownCalls.push(tc)
+    }
+    // If the LLM emitted tool_calls but ALL were duplicates, it's stuck
+    // re-calling. Terminate now instead of dispatching + looping again.
+    const allDuplicates = emittedCount > 0 && duplicateCalls.length === emittedCount
+    if (allDuplicates) {
+      rounds.push({
+        round, content: turnResult.content, finishReason: turnResult.finishReason,
+        localCalls: [], hostWideCalls: [], remoteCalls: [], unknownCalls: [], duplicateCalls,
+        toolCalls: turnResult.toolCalls
+      })
+      return {
+        content: turnResult.content,
+        finishReason: turnResult.finishReason,
+        rounds, dispatched: allDispatched, skipped: allSkipped,
+        stopped_reason: "duplicate_tool_calls"
+      }
     }
 
     // Class 3: locals — fire-and-forget

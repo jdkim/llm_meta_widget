@@ -19,15 +19,25 @@
 <%# into rendered HTML — including any literal `<script>` text, which then %>
 <%# swallows the widget div. One line per comment keeps them self-terminating. %>
 
+<%# Bubble/thinking/role-label styles come from the shared conversation.css %>
+<%# — the canonical "chat conversation" surface owned by this gem. See %>
+<%# comment in /llm_meta_widget_assets/conversation.css. The widget's %>
+<%# outer div opts in via class="llm-meta-conversation" (below). %>
+<link rel="stylesheet" href="/llm_meta_widget_assets/conversation.css">
+
 <style>
-	/* Match llm_meta_chat's chat.css palette + bubble style so the widget
-	 * reads visually as reuse of the same infrastructure. Container is
-	 * floating (position: fixed) — the ONLY departure from the full-page
-	 * chat layout that llm_meta_chat uses.
-	 */
+	/* Widget-specific chrome — floating container, header, scroll region,
+	 * input area. Everything BUBBLE / THINKING / ROLE-related lives in the
+	 * shared conversation.css above. */
 	#llm-meta-widget-chat {
-		position: fixed; bottom: 1em; right: 1em;
-		width: 28em; max-height: 70vh;
+		/* Positioned via JS on open (see setOpen()) so top/left are set in
+		 * pixels — required for CSS `resize: both` to grow correctly
+		 * (bottom/right anchoring blocks the resize handle from being
+		 * dragged outward from viewport corner). */
+		position: fixed;
+		width: 40em; height: 55vh;
+		min-width: 24em; min-height: 16em;
+		max-width: calc(100vw - 2em); max-height: calc(100vh - 2em);
 		background: #ffffff;
 		border: 1px solid #e5e7eb;
 		border-radius: 8px;
@@ -38,7 +48,48 @@
 		font-size: 14px;
 		color: #1f2937;
 		display: flex; flex-direction: column;
+		/* Native drag-to-resize handle appears at bottom-right when
+		 * overflow != visible. overflow:hidden clips at widget edge; the
+		 * inner .lmw-messages has its own scroll so no content is lost. */
+		resize: both;
+		overflow: hidden;
 	}
+	#llm-meta-widget-chat.lmw-collapsed { display: none; }
+
+	/* Collapsed-state toggle — a small floating chat-bubble button in the
+	 * bottom-right corner. Always in the DOM; visible only when the chat
+	 * panel is collapsed. Click to open the chat panel; the panel's × button
+	 * collapses back to this. State persists across page loads via
+	 * localStorage (see the JS below). */
+	#llm-meta-widget-toggle {
+		position: fixed; bottom: 1em; right: 1em;
+		width: 52px; height: 52px;
+		border-radius: 26px;
+		background-color: #3b82f6;
+		color: white;
+		border: none;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+		cursor: pointer;
+		z-index: 9999;
+		display: flex; align-items: center; justify-content: center;
+		transition: background-color 0.15s, transform 0.1s;
+	}
+	#llm-meta-widget-toggle:hover { background-color: #2563eb; }
+	#llm-meta-widget-toggle:active { transform: scale(0.96); }
+	#llm-meta-widget-toggle.lmw-hidden { display: none; }
+	#llm-meta-widget-toggle svg { display: block; }
+
+	/* Header hide/close: a subtle "−" button that collapses to the toggle
+	 * bubble. Sits between the "clear" button and title. */
+	#llm-meta-widget-chat .lmw-hide {
+		background: none; border: none;
+		color: #6b7280;
+		font: inherit; font-size: 18px; line-height: 1;
+		cursor: pointer;
+		padding: 0 8px;
+		transition: color 0.15s;
+	}
+	#llm-meta-widget-chat .lmw-hide:hover { color: #1f2937; }
 	#llm-meta-widget-chat .lmw-header {
 		display: flex; justify-content: space-between; align-items: center;
 		padding-bottom: 8px; margin-bottom: 8px;
@@ -65,72 +116,6 @@
 	#llm-meta-widget-chat .lmw-messages::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 4px; }
 	#llm-meta-widget-chat .lmw-messages::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
 	#llm-meta-widget-chat .lmw-messages::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
-
-	#llm-meta-widget-chat .lmw-message {
-		position: relative;
-		margin-bottom: 6px;
-		padding: 6px 10px;
-		border-radius: 8px;
-		max-width: 85%;
-		line-height: 1.4;
-		word-wrap: break-word;
-	}
-	#llm-meta-widget-chat .lmw-message.user {
-		background-color: #dbeafe;
-		border: 1px solid #bfdbfe;
-		margin-left: auto;
-	}
-	#llm-meta-widget-chat .lmw-message.assistant {
-		background-color: #ffffff;
-		border: 1px solid #e5e7eb;
-		margin-right: auto;
-	}
-	#llm-meta-widget-chat .lmw-message.system {
-		background-color: #fef3c7;
-		border: 1px solid #fde68a;
-		color: #78350f;
-		font-size: 0.9em;
-		font-style: italic;
-	}
-	#llm-meta-widget-chat .lmw-message.error {
-		background-color: #fee2e2;
-		border: 1px solid #fecaca;
-		color: #991b1b;
-	}
-	#llm-meta-widget-chat .lmw-role {
-		display: block;
-		font-weight: 600;
-		font-size: 13px;
-		color: #374151;
-		margin-bottom: 4px;
-	}
-	#llm-meta-widget-chat .lmw-content { line-height: 1.4; word-wrap: break-word; }
-
-	/* Thinking block — same shape as llm_meta_chat's .message-thinking */
-	#llm-meta-widget-chat .lmw-thinking {
-		margin: 0.5em 0;
-		padding: 0.5em 0.75em;
-		background: #f3f4f6;
-		border-left: 3px solid #9ca3af;
-		border-radius: 4px;
-		font-size: 0.85em;
-	}
-	#llm-meta-widget-chat .lmw-thinking summary {
-		cursor: pointer;
-		color: #6b7280;
-		font-weight: 500;
-		user-select: none;
-	}
-	#llm-meta-widget-chat .lmw-thinking .lmw-thinking-body {
-		margin-top: 0.5em;
-		color: #4b5563;
-		white-space: pre-wrap;
-		font-family: ui-monospace, "SF Mono", monospace;
-		font-size: 0.9em;
-		line-height: 1.5;
-		max-height: 10em;
-		overflow-y: auto;
-	}
 
 	/* Input area — mirrors llm_meta_chat's .chat-input-container +
 	 * .chat-input + .send-button so it reads as the same UI. Multi-line
@@ -183,10 +168,20 @@
 	#llm-meta-widget-chat .lmw-send svg { display: block; }
 </style>
 
-<div id="llm-meta-widget-chat">
+<%# Floating toggle — visible when the chat panel is collapsed. See CSS above. %>
+<button type="button" id="llm-meta-widget-toggle" title="Open AI assistant" aria-label="Open AI assistant">
+	<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+		<path d="M2 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-3l-3.5 3.5V12H4a2 2 0 0 1-2-2V4Zm3 2a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm3 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm3 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z"/>
+	</svg>
+</button>
+
+<div id="llm-meta-widget-chat" class="llm-meta-conversation">
 	<div class="lmw-header">
 		<span class="lmw-title">AI assistant</span>
-		<button type="button" class="lmw-clear" title="Clear conversation">clear</button>
+		<div>
+			<button type="button" class="lmw-clear" title="Clear conversation">clear</button>
+			<button type="button" class="lmw-hide" title="Hide">−</button>
+		</div>
 	</div>
 	<div class="lmw-messages"></div>
 	<div class="lmw-input-container">
@@ -205,6 +200,12 @@
 
 <script type="module">
 	import { runChatLoop, fetchMcpManifest } from "<%= orchestrator_path %>";
+	import { marked } from "/llm_meta_widget_assets/marked.esm.js";
+
+	// Standard prose settings — GFM (tables, autolinks, strikethrough),
+	// break single newlines into <br> so streamed LLM output that uses
+	// bare newlines still reads naturally.
+	marked.setOptions({ gfm: true, breaks: true });
 
 	var META_BASE              = <%= base_url.to_json.html_safe %>;
 	var API_KEY_UUID           = <%= api_key_uuid.to_json.html_safe %>;
@@ -217,10 +218,87 @@
 	var WELL_KNOWN_URLS        = <%= raw(well_known_urls.nil? ? "null" : well_known_urls.to_json) %>;
 
 	var root       = document.getElementById("llm-meta-widget-chat");
+	var toggleBtn  = document.getElementById("llm-meta-widget-toggle");
 	var historyEl  = root.querySelector(".lmw-messages");
 	var formEl     = root.querySelector(".lmw-form");
 	var inputEl    = root.querySelector(".lmw-input");
 	var clearBtn   = root.querySelector(".lmw-clear");
+	var hideBtn    = root.querySelector(".lmw-hide");
+
+	// Persistence keys — open/close state + resized geometry (width/height).
+	// Position is re-computed each open so the widget lands at bottom-right
+	// of the CURRENT viewport (not wherever the user resized it last time).
+	// Size is preserved because that's a user preference; position is a
+	// spawn convention.
+	var STORAGE_KEY_OPEN = "llm_meta_widget:open";
+	var STORAGE_KEY_SIZE = "llm_meta_widget:size";  // stored as "WxH" in px
+
+	function applyStoredSize() {
+		try {
+			var raw = localStorage.getItem(STORAGE_KEY_SIZE);
+			if (!raw) return;
+			var parts = raw.split("x");
+			var w = parseInt(parts[0], 10), h = parseInt(parts[1], 10);
+			if (w > 0 && h > 0) {
+				root.style.width  = w + "px";
+				root.style.height = h + "px";
+			}
+		} catch (e) { /* noop */ }
+	}
+	function saveCurrentSize() {
+		try {
+			var rect = root.getBoundingClientRect();
+			localStorage.setItem(STORAGE_KEY_SIZE,
+				Math.round(rect.width) + "x" + Math.round(rect.height));
+		} catch (e) { /* noop */ }
+	}
+
+	// Anchor the widget at bottom-right of the viewport, given whatever
+	// size it currently has. Uses top/left in pixels (required for CSS
+	// `resize: both` — a bottom/right-pinned element can't be dragged out
+	// past the viewport edge to grow).
+	function positionAtBottomRight() {
+		var margin = 16;  // ~1em from the viewport edges
+		var rect = root.getBoundingClientRect();
+		var top  = Math.max(margin, window.innerHeight - rect.height - margin);
+		var left = Math.max(margin, window.innerWidth  - rect.width  - margin);
+		root.style.top  = top  + "px";
+		root.style.left = left + "px";
+	}
+
+	function setOpen(open) {
+		if (open) {
+			applyStoredSize();          // restore user's preferred size (if any)
+			root.classList.remove("lmw-collapsed");
+			toggleBtn.classList.add("lmw-hidden");
+			// Position AFTER unhiding so getBoundingClientRect returns real size.
+			positionAtBottomRight();
+			try { inputEl.focus(); } catch (e) { /* noop */ }
+		} else {
+			saveCurrentSize();          // capture whatever the user resized to
+			root.classList.add("lmw-collapsed");
+			toggleBtn.classList.remove("lmw-hidden");
+		}
+		try { localStorage.setItem(STORAGE_KEY_OPEN, open ? "1" : "0"); } catch (e) { /* noop */ }
+	}
+	var initialOpen = false;
+	try { initialOpen = localStorage.getItem(STORAGE_KEY_OPEN) === "1"; } catch (e) { /* noop */ }
+	setOpen(initialOpen);
+
+	toggleBtn.addEventListener("click", function() { setOpen(true); });
+	hideBtn.addEventListener("click", function() { setOpen(false); });
+
+	// Persist size on every resize interaction. ResizeObserver fires
+	// continuously during a drag; save + reposition on each tick so the
+	// widget stays anchored to bottom-right as the user grows it.
+	if (typeof ResizeObserver === "function") {
+		var ro = new ResizeObserver(function() {
+			if (root.classList.contains("lmw-collapsed")) return;
+			positionAtBottomRight();
+			saveCurrentSize();
+		});
+		ro.observe(root);
+	}
 
 	var conversation = [];  // [{role, content}, ...] — grows across turns
 	var actionsSchemaEl = document.getElementById(ACTIONS_SCHEMA_ID);
@@ -242,19 +320,40 @@
 	})();
 
 	function appendTurn(role, text) {
+		// Class names mirror llm_meta_chat's chats/_message.html.erb —
+		// `.message.<role>`, `.message-role`, `.message-content` — so the
+		// shared conversation.css styles apply directly (see the <link>
+		// above). The .lmw-* prefix is reserved for widget-CHROME classes
+		// (header, clear button, scroll region, input area) that aren't
+		// part of the shared conversation surface.
 		var div = document.createElement("div");
-		div.className = "lmw-message " + role;
+		div.className = "message " + role;
 		var label = document.createElement("div");
-		label.className = "lmw-role";
+		label.className = "message-role";
 		label.textContent = roleLabel(role);
 		var body = document.createElement("div");
-		body.className = "lmw-content";
+		body.className = "message-content";
+		// User / system / error turns render as plain text (safe from any
+		// injection via user input or server-supplied strings). Assistant
+		// content is rendered as markdown but only after the assistant's
+		// text is streamed in via renderMarkdownInto — this appendTurn
+		// creates the empty container.
 		body.textContent = text;
 		div.appendChild(label);
+		div.appendChild(document.createTextNode(" "));
 		div.appendChild(body);
 		historyEl.appendChild(div);
 		historyEl.scrollTop = historyEl.scrollHeight;
 		return body;
+	}
+
+	// Render a raw-markdown buffer into an element's innerHTML. marked's
+	// default HTML output escapes user content, so passing arbitrary
+	// LLM output is safe against XSS. Called per-delta so streaming
+	// assistant text formats live (headings/lists/code blocks/etc.).
+	function renderMarkdownInto(el, mdText) {
+		try { el.innerHTML = marked.parse(mdText); }
+		catch (e) { el.textContent = mdText; }  // fall back to raw on parse error
 	}
 
 	// Role labels mirror llm_meta_chat's chats/_message.html.erb:
@@ -274,13 +373,15 @@
 
 	function ensureThinkingBlock() {
 		if (currentThinkingBody) return currentThinkingBody;
+		// Class names match llm_meta_chat's .message-thinking pattern so
+		// the shared conversation.css applies directly.
 		var details = document.createElement("details");
-		details.className = "lmw-thinking";
+		details.className = "message-thinking";
 		details.open = true;
 		var summary = document.createElement("summary");
 		summary.textContent = "🤔 thinking…";
 		var body = document.createElement("div");
-		body.className = "lmw-thinking-body";
+		body.className = "message-thinking-content";
 		details.appendChild(summary);
 		details.appendChild(body);
 		historyEl.appendChild(details);
@@ -314,10 +415,10 @@
 			"You are integrated into a web page as an AI assistant. You have tools available to change page state or fetch information.",
 			"",
 			"RULES for tool use:",
-			"1. When a state change or data fetch is needed, invoke the matching tool via a function call. Do not describe the intent in text without invoking (a textual promise like \"I will add X\" is a failure).",
-			"2. After ANY tool has returned a result (visible in the conversation history as a role:tool message), YOUR NEXT MESSAGE MUST BE A PLAIN-TEXT ANSWER using that result. DO NOT emit another tool call.",
-			"3. Especially: NEVER call the SAME tool twice in a row with the same or similar arguments — its earlier result is already in the conversation history. If you need to reference it, read it from there.",
-			"4. Only call an additional tool if the user's request TRULY requires more work that isn't covered by prior results (rare — most requests need one tool call and a synthesis).",
+			"1. If the user's question can be answered from the Current page state below, answer directly with a plain-text response — do NOT invoke a tool.",
+			"2. If the user requests a state change, or needs information not in the page state, invoke the matching tool via a function call. Do not describe your intent in text without actually invoking (a textual promise like \"I will add X\" is a failure).",
+			"3. After a tool returns a result, YOUR NEXT MESSAGE MUST BE A PLAIN-TEXT ANSWER using that result. DO NOT emit another tool call.",
+			"4. NEVER call the SAME tool twice in a row with the same or similar arguments — its earlier result is already in the conversation history.",
 			"",
 			"Current page state:",
 			JSON.stringify(currentPageState(), null, 2)
@@ -360,6 +461,7 @@
 			.concat([{ role: "user", content: userText }]);
 
 		var assistantBody = appendTurn("assistant", "");
+		var assistantMarkdown = "";  // accumulate raw markdown, re-render on each delta
 
 		try {
 			await wellKnownReady;
@@ -376,10 +478,13 @@
 				maxRounds:     MAX_ROUNDS,
 				signal:        currentAbort.signal,
 				onRoundStart: function(roundIdx) {
-					if (roundIdx > 0) {
-						appendTurn("system", "🔄 round " + (roundIdx + 1) + " — synthesizing with tool results");
-						assistantBody = appendTurn("assistant", "");
-					}
+					// Loop mechanics are debugging info, not user-facing signal.
+					// Reuse the same assistant bubble across rounds — text just
+					// keeps streaming into it (accumulating markdown). Weaker
+					// models sometimes emit tool_calls in >1 round instead of
+					// synthesizing right away; keeping one bubble makes the
+					// resulting conversation read as ONE reply rather than a
+					// debug trace with round separators.
 					collapseThinkingBlock();
 				},
 				onThinkingDelta: function(delta) {
@@ -390,24 +495,47 @@
 				},
 				onTextDelta: function(delta) {
 					collapseThinkingBlock();
-					assistantBody.textContent += delta;
+					assistantMarkdown += delta;
+					renderMarkdownInto(assistantBody, assistantMarkdown);
 					historyEl.scrollTop = historyEl.scrollHeight;
 				}
 			});
 			conversation.push({ role: "user",      content: userText });
 			conversation.push({ role: "assistant", content: result.content });
+
+			// Append a compact "tools used" footer INSIDE the assistant
+			// bubble so users have visual confirmation of what the LLM
+			// actually did — especially important when the LLM's own text
+			// is incomplete (e.g. "Let me first search…" with no follow-up
+			// synthesis, common with weaker tool-use models).
 			if (result.dispatched.length > 0) {
-				var summary = result.dispatched.map(function(d) {
-					return d.error ? "❌ " + d.toolCall.name + ": " + d.error.message : "✔ " + d.toolCall.name;
-				}).join(", ");
-				appendTurn("system", "Actions: " + summary);
+				var chips = document.createElement("div");
+				chips.className = "lmw-tool-chips";
+				result.dispatched.forEach(function(d) {
+					var chip = document.createElement("span");
+					chip.className = "lmw-tool-chip" + (d.error ? " error" : "");
+					chip.textContent = (d.error ? "❌ " : "🔧 ") + d.toolCall.name;
+					if (d.error) chip.title = d.error.message;
+					chips.appendChild(chip);
+				});
+				assistantBody.appendChild(chips);
 			}
+
+			// Skipped = LLM tried a tool that doesn't exist. Real signal.
 			if (result.skipped.length > 0) {
-				appendTurn("system", "Skipped (no handler): " +
+				appendTurn("system", "Not available on this page: " +
 					result.skipped.map(function(t) { return t.name; }).join(", "));
 			}
-			if (result.stopped_reason) {
-				appendTurn("system", "⚠ " + result.stopped_reason);
+			// Loop termination reasons:
+			//   "duplicate_tool_calls" — LLM re-called an already-invoked
+			//     tool; the earlier round's dispatch already produced the
+			//     answer/effect, so we silently absorb this (no user warning).
+			//   otherwise (e.g. max_rounds) — the loop hit a real hard cap
+			//     that likely truncated the response; user should know.
+			if (result.stopped_reason && result.stopped_reason !== "duplicate_tool_calls") {
+				appendTurn("system",
+					"The assistant reached its tool-use limit before finishing. " +
+					"The reply above may be incomplete — try asking again or rephrasing.");
 			}
 		} catch (err) {
 			if (err.name === "AbortError" || /aborted/i.test(err.message || "")) {

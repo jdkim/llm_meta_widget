@@ -1,0 +1,183 @@
+/*
+ * Canonical "chat conversation" styles for the llm_meta ecosystem.
+ *
+ * Owned by the llm_meta_widget gem. Consumed by:
+ *   - the widget partial itself (llm_meta_widget/_chat_panel.html.erb)
+ *   - any llm_meta_client-scaffolded chat host that adopts the same
+ *     conversation surface
+ *
+ * Scoped by the `.llm-meta-conversation` opt-in class on a wrapping
+ * element — so these rules only affect elements the consumer has
+ * declared as chat-conversation surfaces. Prevents accidental style
+ * bleed onto random host-page elements named .message or .message-role.
+ *
+ * Any host that wants the styles applied wraps its conversation
+ * markup in <div class="llm-meta-conversation"> ... </div> and includes
+ * this file (served via /llm_meta_widget_assets/conversation.css).
+ */
+
+.llm-meta-conversation .message {
+	position: relative;
+	margin-bottom: 6px;
+	padding: 6px 10px;
+	border-radius: 8px;
+	max-width: 85%;
+	line-height: 1.4;
+	word-wrap: break-word;
+}
+.llm-meta-conversation .message.user {
+	background-color: #dbeafe;
+	border: 1px solid #bfdbfe;
+	margin-left: auto;
+}
+.llm-meta-conversation .message.assistant {
+	background-color: #ffffff;
+	border: 1px solid #e5e7eb;
+	margin-right: auto;
+}
+.llm-meta-conversation .message.system {
+	background-color: #fef3c7;
+	border: 1px solid #fde68a;
+	color: #78350f;
+	font-size: 0.9em;
+	font-style: italic;
+}
+.llm-meta-conversation .message.error {
+	background-color: #fee2e2;
+	border: 1px solid #fecaca;
+	color: #991b1b;
+}
+
+.llm-meta-conversation .message-role {
+	display: block;
+	font-weight: 600;
+	font-size: 13px;
+	color: #374151;
+	margin-bottom: 4px;
+}
+.llm-meta-conversation .message-content {
+	line-height: 1.4;
+	word-wrap: break-word;
+	overflow-wrap: anywhere;
+	min-width: 0;
+	color: #1f2937;
+}
+
+/* Markdown-rendered content styling — matches llm_meta_chat's
+ * .message-content descendants in chats.css so LLM output looks the
+ * same wherever it renders (widget's streaming path uses marked.esm.js;
+ * chat host's saved-message path uses Redcarpet server-side; both
+ * produce standard HTML that these rules style). */
+.llm-meta-conversation .message-content p { margin: 0 0 0.5em 0; }
+.llm-meta-conversation .message-content p:last-child { margin-bottom: 0; }
+.llm-meta-conversation .message-content h1,
+.llm-meta-conversation .message-content h2,
+.llm-meta-conversation .message-content h3,
+.llm-meta-conversation .message-content h4,
+.llm-meta-conversation .message-content h5,
+.llm-meta-conversation .message-content h6 {
+	margin: 0.5em 0 0.25em 0;
+	line-height: 1.25;
+}
+.llm-meta-conversation .message-content ul,
+.llm-meta-conversation .message-content ol {
+	margin: 0.25em 0 0.5em 1.25em;
+	padding: 0;
+}
+.llm-meta-conversation .message-content li { margin: 0.1em 0; }
+.llm-meta-conversation .message-content blockquote {
+	border-left: 3px solid #d1d5db;
+	margin: 0.5em 0;
+	padding: 0.1em 0.75em;
+	color: #4b5563;
+}
+.llm-meta-conversation .message-content code {
+	background-color: #f3f4f6;
+	padding: 1px 4px;
+	border-radius: 4px;
+	font-size: 0.9em;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.llm-meta-conversation .message-content pre {
+	background-color: #f3f4f6;
+	border: 1px solid #e5e7eb;
+	border-radius: 6px;
+	padding: 8px 10px;
+	margin: 0.5em 0;
+	overflow-x: auto;
+	max-width: 100%;
+	white-space: pre;
+}
+.llm-meta-conversation .message-content pre code { background: none; padding: 0; }
+.llm-meta-conversation .message-content table {
+	border-collapse: collapse;
+	margin: 0.5em 0;
+	display: block;
+	overflow-x: auto;
+	max-width: 100%;
+}
+.llm-meta-conversation .message-content th,
+.llm-meta-conversation .message-content td {
+	border: 1px solid #d1d5db;
+	padding: 4px 8px;
+}
+.llm-meta-conversation .message-content th { background-color: #f3f4f6; }
+.llm-meta-conversation .message-content a {
+	color: #2563eb;
+	text-decoration: underline;
+}
+.llm-meta-conversation .message-content img { max-width: 100%; height: auto; }
+
+/* Tool-use footer inside an assistant bubble — compact chips naming the
+ * tools the LLM invoked this turn. Gives users visual confirmation of
+ * what actually happened, particularly when the LLM's own text is thin. */
+.llm-meta-conversation .lmw-tool-chips {
+	margin-top: 0.5em;
+	padding-top: 0.5em;
+	border-top: 1px dashed #e5e7eb;
+	display: flex; flex-wrap: wrap; gap: 4px;
+}
+.llm-meta-conversation .lmw-tool-chip {
+	display: inline-block;
+	padding: 2px 8px;
+	background: #eef2ff;
+	color: #3730a3;
+	border: 1px solid #c7d2fe;
+	border-radius: 10px;
+	font-size: 0.8em;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	line-height: 1.4;
+}
+.llm-meta-conversation .lmw-tool-chip.error {
+	background: #fee2e2;
+	color: #991b1b;
+	border-color: #fecaca;
+}
+
+/* Thinking-token collapsible block — same shape as llm_meta_chat's
+ * .message-thinking. Streams during reasoning, collapses to a
+ * "(finished)" summary once text starts flowing. */
+.llm-meta-conversation .message-thinking {
+	margin: 0.5em 0;
+	padding: 0.5em 0.75em;
+	background: #f3f4f6;
+	border-left: 3px solid #9ca3af;
+	border-radius: 4px;
+	font-size: 0.85em;
+}
+.llm-meta-conversation .message-thinking summary {
+	cursor: pointer;
+	color: #6b7280;
+	font-weight: 500;
+	user-select: none;
+}
+.llm-meta-conversation .message-thinking-content {
+	margin-top: 0.5em;
+	color: #4b5563;
+	white-space: pre-wrap;
+	font-family: ui-monospace, "SF Mono", monospace;
+	font-size: 0.9em;
+	line-height: 1.5;
+	max-height: 10em;
+	overflow-y: auto;
+}

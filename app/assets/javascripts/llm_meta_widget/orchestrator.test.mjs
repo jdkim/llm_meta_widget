@@ -1,15 +1,15 @@
 // Node built-in test runner (v18+). Run:
-//   node --test lib/generators/llm_meta_client/scaffold/templates/app/javascript/llm_meta_orchestrator.test.mjs
+//   node --test app/assets/javascripts/llm_meta_widget/orchestrator.test.mjs
 //
 // Tests focus on the SSE parser — the piece most likely to have edge-case
 // bugs (chunk boundaries, missing trailing newline, CRLF frames, event-less
-// data frames). Integration with fetch() is covered manually via the demo
-// page in the chat host.
+// data frames). Integration with fetch() is covered manually via the widget
+// running on a real page (PubDictionaries text_annotation view).
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { parseSseStream, dispatchLocalToolCalls, runChatLoop, callMcpTool, fetchMcpManifest } from "./llm_meta_orchestrator.js"
+import { parseSseStream, dispatchLocalToolCalls, runChatLoop, callMcpTool, fetchMcpManifest } from "./orchestrator.js"
 
 // --- fixtures --------------------------------------------------------------
 
@@ -484,22 +484,96 @@ test("runChatLoop: remote dispatch failure is captured + fed back to LLM as an e
   assert.ok(toolMsg.content.includes("error"), "tool message content mentions the error")
 })
 
-test("runChatLoop: hits maxRounds cap → returns with stopped_reason instead of hanging", async () => {
-  // An LLM that never stops asking for remote tool_calls.
-  const remoteTools = [ { id: 1, name: "never_enough" } ]
+test("runChatLoop: hits maxRounds cap when tool_calls have unique args each round", async () => {
+  // An LLM that keeps asking for remote tool_calls but each with DIFFERENT
+  // args (query paginates, etc.). De-dupe (see next test) doesn't fire —
+  // these are legit distinct calls. Loop terminates only at maxRounds.
+  const remoteTools = [ { id: 1, name: "paginate" } ]
+  let callIdx = 0
   const { result } = await withFetch(
     [
       { matches: (u) => u.includes("/single_llm_calls"),
         respond: () => sseResponse(sseWithToolCalls(
-          [ { id: `c${Math.random()}`, name: "never_enough", arguments: {} } ]
+          [ { id: `c${++callIdx}`, name: "paginate", arguments: { page: callIdx } } ]
         )) },
       { matches: (u) => u.includes("/mcp_tools/1/call"),
-        respond: () => jsonResponse({ result: "here you go" }) }
+        respond: () => jsonResponse({ result: "more data" }) }
     ],
     (mock) => runChatLoop({ ...BASE_OPTS, remoteTools, maxRounds: 3 })
   )
   assert.equal(result.rounds.length, 3)
   assert.match(result.stopped_reason, /max_rounds/)
+})
+
+test("runChatLoop: identical repeated tool_call terminates early with stopped_reason=duplicate_tool_calls", async () => {
+  // The pathological loop we actually see with qwen3-6-35b-fast: LLM
+  // re-invokes the SAME tool with the SAME args after seeing its result.
+  // De-dupe should catch it and terminate on round 2 (round 1 dispatched,
+  // round 2's identical call is a signal the LLM is done).
+  const remoteTools = [ { id: 1, name: "list_all" } ]
+  const { result, calls } = await withFetch(
+    [
+      { matches: (u) => u.includes("/single_llm_calls"),
+        respond: () => sseResponse(sseWithToolCalls(
+          [ { id: "c1", name: "list_all", arguments: {} } ]
+        )) },
+      { matches: (u) => u.includes("/mcp_tools/1/call"),
+        respond: () => jsonResponse({ result: "everything" }) }
+    ],
+    (mock) => runChatLoop({ ...BASE_OPTS, remoteTools, maxRounds: 10 })
+  )
+  // Two LLM turns (round 1 = dispatch, round 2 = detected duplicate + bail).
+  assert.equal(result.rounds.length, 2)
+  assert.equal(result.stopped_reason, "duplicate_tool_calls")
+  // Only ONE actual MCP dispatch happened (round 2's was suppressed).
+  assert.equal(calls.filter((c) => c.url.includes("/mcp_tools/1/call")).length, 1)
+  // The single dispatch is still reported in dispatched[].
+  assert.equal(result.dispatched.length, 1)
+})
+
+test("runChatLoop: mixed round — new tool_call dispatches, duplicate is skipped, loop continues if any non-dup remains", async () => {
+  // Round 1: LLM calls A + B (both new, both dispatched).
+  // Round 2: LLM calls A (duplicate) + C (new). A is skipped, C is dispatched,
+  //   loop continues to round 3.
+  // Round 3: LLM produces text, no tool_calls → clean done.
+  const remoteTools = [
+    { id: 1, name: "a" }, { id: 2, name: "b" }, { id: 3, name: "c" }
+  ]
+  let round = 0
+  const { result, calls } = await withFetch(
+    [
+      { matches: (u) => u.includes("/single_llm_calls"),
+        respond: () => {
+          round++
+          if (round === 1) {
+            return sseResponse(sseWithToolCalls([
+              { id: "c1", name: "a", arguments: { x: 1 } },
+              { id: "c2", name: "b", arguments: {} }
+            ]))
+          }
+          if (round === 2) {
+            return sseResponse(sseWithToolCalls([
+              { id: "c3", name: "a", arguments: { x: 1 } },  // duplicate
+              { id: "c4", name: "c", arguments: {} }         // new
+            ]))
+          }
+          return sseResponse(sseDoneOnly("all done"))
+        } },
+      { matches: (u) => u.includes("/mcp_tools/1/call"),
+        respond: () => jsonResponse({ result: "A" }) },
+      { matches: (u) => u.includes("/mcp_tools/2/call"),
+        respond: () => jsonResponse({ result: "B" }) },
+      { matches: (u) => u.includes("/mcp_tools/3/call"),
+        respond: () => jsonResponse({ result: "C" }) }
+    ],
+    (mock) => runChatLoop({ ...BASE_OPTS, remoteTools, maxRounds: 5 })
+  )
+  assert.equal(result.rounds.length, 3)
+  assert.equal(result.stopped_reason, undefined)  // clean termination
+  // A + B + C each dispatched exactly once — duplicate A suppressed.
+  assert.equal(calls.filter((c) => c.url.includes("/mcp_tools/1/call")).length, 1)
+  assert.equal(calls.filter((c) => c.url.includes("/mcp_tools/2/call")).length, 1)
+  assert.equal(calls.filter((c) => c.url.includes("/mcp_tools/3/call")).length, 1)
 })
 
 // ===========================================================================
