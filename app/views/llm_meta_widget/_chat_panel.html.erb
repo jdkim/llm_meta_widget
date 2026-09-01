@@ -92,10 +92,148 @@
 	#llm-meta-widget-chat .lmw-hide:hover { color: #1f2937; }
 	#llm-meta-widget-chat .lmw-header {
 		display: flex; justify-content: space-between; align-items: center;
+		gap: 8px;
 		padding-bottom: 8px; margin-bottom: 8px;
 		border-bottom: 2px solid #e5e7eb;
 	}
+	#llm-meta-widget-chat .lmw-header-right { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+
+	/* Level-1 pickers row — matches chat.aibranch.org's input-container
+	 * convention (attach / model / tools / settings in a horizontal row
+	 * below the textarea). We only render model + tools for now. Uses
+	 * relative positioning so the tools <details> panel can drop down
+	 * as a floating overlay instead of pushing the input area around. */
+	#llm-meta-widget-chat .lmw-input-controls {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin-top: 6px;
+		position: relative;
+		min-height: 26px;
+	}
 	#llm-meta-widget-chat .lmw-title { font-weight: 600; color: #1f2937; }
+
+	/* Level-1 model picker — compact <select> next to the title.
+	 * Populated by JS on widget open from GET /api/llms (anon path
+	 * returns Ollama-only). Hidden entirely if enable_model_picker
+	 * is false at the helper call site. */
+	#llm-meta-widget-chat .lmw-model-picker {
+		font: inherit; font-size: 12px;
+		padding: 3px 6px;
+		border: 1px solid #d1d5db;
+		border-radius: 4px;
+		background: #f9fafb;
+		color: #374151;
+		cursor: pointer;
+		max-width: 12em;
+		text-overflow: ellipsis;
+	}
+	#llm-meta-widget-chat .lmw-model-picker:focus {
+		outline: none;
+		border-color: #3b82f6;
+		box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+	}
+
+	/* Level-1 tools picker — inline chip in the input-controls row (same
+	 * convention as chat.aibranch.org). The tools list drops down as a
+	 * floating overlay above the input, so opening the panel doesn't
+	 * push the textarea around. Populated by JS on widget open from
+	 * GET /api/mcp_servers (anon path returns public_to_anonymous MCP
+	 * servers with their tools inline). One checkbox per SERVER —
+	 * toggling enables/disables ALL of its tools. */
+	#llm-meta-widget-chat .lmw-tools-picker {
+		position: relative;   /* anchor for the absolutely-positioned list */
+	}
+	#llm-meta-widget-chat .lmw-tools-picker > summary {
+		list-style: none;
+		cursor: pointer;
+		padding: 3px 8px;
+		font-size: 12px;
+		color: #374151;
+		background: #f9fafb;
+		border: 1px solid #d1d5db;
+		border-radius: 4px;
+		display: inline-flex; align-items: center; gap: 6px;
+	}
+	#llm-meta-widget-chat .lmw-tools-picker > summary:hover { background: #f3f4f6; }
+	#llm-meta-widget-chat .lmw-tools-picker > summary::-webkit-details-marker { display: none; }
+	#llm-meta-widget-chat .lmw-tools-picker[open] > summary {
+		background: #eff6ff;
+		border-color: #93c5fd;
+	}
+	#llm-meta-widget-chat .lmw-tools-count {
+		display: inline-block;
+		background: #0ea5e9;
+		color: #fff;
+		font-size: 10px;
+		padding: 0 5px;
+		border-radius: 8px;
+		min-width: 14px;
+		text-align: center;
+	}
+	#llm-meta-widget-chat .lmw-tools-count.lmw-tools-count-zero {
+		background: #d1d5db;
+		color: #6b7280;
+	}
+	/* Floating dropdown panel — sits above the input area when open so
+	 * expanding never shifts the textarea. Bottom-anchored so it opens
+	 * UPWARD (natural direction since we're at the panel's bottom). */
+	#llm-meta-widget-chat .lmw-tools-list {
+		position: absolute;
+		bottom: calc(100% + 4px);
+		left: 0;
+		min-width: 220px;
+		max-height: 12em;
+		overflow-y: auto;
+		background: #ffffff;
+		border: 1px solid #d1d5db;
+		border-radius: 6px;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.10);
+		padding: 4px 0;
+		z-index: 10;
+	}
+	#llm-meta-widget-chat .lmw-tools-item {
+		display: flex; align-items: center; gap: 6px;
+		padding: 4px 10px;
+		font-size: 12px;
+		color: #374151;
+		cursor: pointer;
+	}
+	#llm-meta-widget-chat .lmw-tools-item:hover { background: #eff6ff; }
+	#llm-meta-widget-chat .lmw-tools-item input[type="checkbox"] { margin: 0; }
+	#llm-meta-widget-chat .lmw-tools-empty {
+		padding: 6px 10px;
+		font-size: 12px;
+		color: #94a3b8;
+		font-style: italic;
+	}
+	/* Two-level tool selection — mirrors chat.aibranch.org's tool_selector.
+	 * Server row (bulk checkbox + name + count + caret) is clickable to
+	 * expand its children. Individual tool rows are indented one level. */
+	#llm-meta-widget-chat .lmw-tools-server + .lmw-tools-server {
+		border-top: 1px solid #f1f5f9;
+	}
+	#llm-meta-widget-chat .lmw-tools-server-row {
+		display: flex; align-items: center; gap: 6px;
+		padding: 4px 10px;
+		font-size: 12px;
+		font-weight: 500;
+		color: #1f2937;
+		cursor: pointer;
+	}
+	#llm-meta-widget-chat .lmw-tools-server-row:hover { background: #eff6ff; }
+	#llm-meta-widget-chat .lmw-tools-server-name  { flex: 1; }
+	#llm-meta-widget-chat .lmw-tools-server-caret {
+		color: #94a3b8;
+		font-size: 10px;
+		line-height: 1;
+		flex-shrink: 0;
+	}
+	#llm-meta-widget-chat .lmw-tools-item-child {
+		padding-left: 26px;  /* align tool checkboxes past the server bulk checkbox */
+		font-size: 12px;
+		color: #4b5563;
+	}
 	#llm-meta-widget-chat .lmw-clear {
 		background: #ef4444; color: white; border: none;
 		padding: 4px 10px; border-radius: 6px; cursor: pointer;
@@ -110,7 +248,10 @@
 		background-color: #f9fafb;
 		border-radius: 8px;
 		margin-bottom: 8px;
-		min-height: 6em; max-height: 50vh;
+		min-height: 6em;
+		/* No max-height — messages grows with the widget (which the user
+		 * can drag to any size). A hard cap here would leave an ugly gap
+		 * between the messages area and the input on tall widget sizes. */
 	}
 	#llm-meta-widget-chat .lmw-messages::-webkit-scrollbar { width: 8px; }
 	#llm-meta-widget-chat .lmw-messages::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 4px; }
@@ -178,7 +319,7 @@
 <div id="llm-meta-widget-chat" class="llm-meta-conversation">
 	<div class="lmw-header">
 		<span class="lmw-title">AI assistant</span>
-		<div>
+		<div class="lmw-header-right">
 			<button type="button" class="lmw-clear" title="Clear conversation">clear</button>
 			<button type="button" class="lmw-hide" title="Hide">−</button>
 		</div>
@@ -194,6 +335,33 @@
 					</svg>
 				</button>
 			</div>
+			<%# Level-1 pickers — model + tools sit inline BELOW the textarea, %>
+			<%# same layout convention as chat.aibranch.org's input area. Each %>
+			<%# picker is hidden by CSS if its enable_* flag is false at the %>
+			<%# helper call site (level-0 minimalist mode). %>
+			<% if enable_model_picker || enable_tool_picker %>
+				<div class="lmw-input-controls">
+					<% if enable_model_picker %>
+						<%# Populated by JS on widget open from GET /api/llms (anon → Ollama-only). %>
+						<select class="lmw-model-picker" title="Select model" aria-label="Select model" style="display:none">
+						</select>
+					<% end %>
+					<% if enable_tool_picker %>
+						<%# Populated by JS on widget open from GET /api/mcp_servers. Each %>
+						<%# checkbox toggles ALL tools on that server. Selections are %>
+						<%# session-scoped (not persisted across widget reloads). %>
+						<details class="lmw-tools-picker">
+							<summary>
+								🔧 Tools
+								<span class="lmw-tools-count lmw-tools-count-zero">0</span>
+							</summary>
+							<div class="lmw-tools-list">
+								<div class="lmw-tools-empty">Loading…</div>
+							</div>
+						</details>
+					<% end %>
+				</div>
+			<% end %>
 		</form>
 	</div>
 </div>
@@ -216,14 +384,22 @@
 	var REMOTE_TOOLS_SCHEMA_ID = <%= remote_tools_schema_id.to_json.html_safe %>;
 	var MAX_ROUNDS             = <%= max_rounds.to_json.html_safe %>;
 	var WELL_KNOWN_URLS        = <%= raw(well_known_urls.nil? ? "null" : well_known_urls.to_json) %>;
+	var ENABLE_MODEL_PICKER    = <%= enable_model_picker.to_json.html_safe %>;
+	var ENABLE_TOOL_PICKER     = <%= enable_tool_picker.to_json.html_safe %>;
+	var MODEL_ALLOWLIST        = <%= raw(models.nil?    ? "null" : models.to_json) %>;
+	var HUB_TOOLS_ALLOWLIST    = <%= raw(hub_tools.nil? ? "null" : hub_tools.to_json) %>;
 
-	var root       = document.getElementById("llm-meta-widget-chat");
-	var toggleBtn  = document.getElementById("llm-meta-widget-toggle");
-	var historyEl  = root.querySelector(".lmw-messages");
-	var formEl     = root.querySelector(".lmw-form");
-	var inputEl    = root.querySelector(".lmw-input");
-	var clearBtn   = root.querySelector(".lmw-clear");
-	var hideBtn    = root.querySelector(".lmw-hide");
+	var root         = document.getElementById("llm-meta-widget-chat");
+	var toggleBtn    = document.getElementById("llm-meta-widget-toggle");
+	var historyEl    = root.querySelector(".lmw-messages");
+	var formEl       = root.querySelector(".lmw-form");
+	var inputEl      = root.querySelector(".lmw-input");
+	var clearBtn     = root.querySelector(".lmw-clear");
+	var hideBtn      = root.querySelector(".lmw-hide");
+	var modelPicker  = root.querySelector(".lmw-model-picker");   // null when disabled
+	var toolsPicker  = root.querySelector(".lmw-tools-picker");   // null when disabled
+	var toolsListEl  = root.querySelector(".lmw-tools-list");     // null when disabled
+	var toolsCountEl = root.querySelector(".lmw-tools-count");    // null when disabled
 
 	// Persistence keys — open/close state + resized geometry (width/height).
 	// Position is re-computed each open so the widget lands at bottom-right
@@ -274,6 +450,11 @@
 			// Position AFTER unhiding so getBoundingClientRect returns real size.
 			positionAtBottomRight();
 			try { inputEl.focus(); } catch (e) { /* noop */ }
+			// Fire-and-forget the hub-picker fetch on first open; subsequent
+			// opens are no-ops (pickerLoaded flag). We deliberately don't
+			// await — the widget is immediately usable with the initial MODEL
+			// and no hub tools; pickers populate a moment later.
+			ensurePickerLoaded().catch(function(e) { console.warn("[widget] picker load failed:", e); });
 		} else {
 			saveCurrentSize();          // capture whatever the user resized to
 			root.classList.add("lmw-collapsed");
@@ -304,7 +485,238 @@
 	var actionsSchemaEl = document.getElementById(ACTIONS_SCHEMA_ID);
 	var localTools = actionsSchemaEl ? JSON.parse(actionsSchemaEl.textContent) : [];
 	var remoteToolsEl = document.getElementById(REMOTE_TOOLS_SCHEMA_ID);
+	// remoteTools is a mutable live list: starts from the schema-provided
+	// baseline (if any), then the level-1 picker adds/removes entries as
+	// the visitor toggles server checkboxes. Passed to runChatLoop on
+	// every submit so the current selection is respected turn-by-turn.
 	var remoteTools = remoteToolsEl ? JSON.parse(remoteToolsEl.textContent) : [];
+
+	// Level-1 picker caches. hubMcpServers[] is the list of anon-visible
+	// servers fetched from GET /api/mcp_servers; each server has an
+	// embedded `tools` array. selectedToolIds is the set of *individual*
+	// tool ids currently ON — same granularity as chat.aibranch.org's
+	// tool_selector: each tool can be toggled individually, and each
+	// server has a bulk-toggle checkbox that reflects/drives its children's
+	// state (all-on / indeterminate / all-off).
+	var hubMcpServers = [];
+	var selectedToolIds = new Set();
+
+	function anyAllowedByAllowlist(name, allowlist) {
+		return allowlist === null || allowlist.indexOf(name) >= 0;
+	}
+
+	function refreshRemoteToolsFromPicker() {
+		// Flatten every SELECTED tool (across all servers) into remoteTools,
+		// adapted to runChatLoop's expected { id, name, description, input_schema }.
+		var flat = [];
+		hubMcpServers.forEach(function(s) {
+			(s.tools || []).forEach(function(t) {
+				if (!selectedToolIds.has(t.id)) return;
+				flat.push({
+					id:           t.id,
+					name:         t.name,
+					description:  t.description,
+					input_schema: t.input_schema
+				});
+			});
+		});
+		remoteTools = flat;
+		if (toolsCountEl) {
+			toolsCountEl.textContent = flat.length;
+			toolsCountEl.classList.toggle("lmw-tools-count-zero", flat.length === 0);
+		}
+	}
+
+	// Reflect the mix of child-tool states onto a server's bulk checkbox
+	// (checked / indeterminate / unchecked). Called after any child
+	// checkbox change, and after applying a bulk toggle.
+	function refreshServerBulkCheckbox(server, bulkCheckbox) {
+		var tools = server.tools || [];
+		var n = tools.length;
+		if (n === 0) { bulkCheckbox.checked = false; bulkCheckbox.indeterminate = false; return; }
+		var onCount = 0;
+		tools.forEach(function(t) { if (selectedToolIds.has(t.id)) onCount++; });
+		bulkCheckbox.checked       = (onCount === n);
+		bulkCheckbox.indeterminate = (onCount > 0 && onCount < n);
+	}
+
+	async function loadHubResourcesForPickers() {
+		// Called once on first widget open (idempotent — pickerLoaded flag
+		// below). Fetches models + MCP servers from the hub's anon endpoints
+		// and populates each picker. Non-fatal if either fetch fails (widget
+		// still works with the initial `model:` + no hub tools).
+		var tasks = [];
+
+		if (ENABLE_MODEL_PICKER && modelPicker) {
+			tasks.push(fetch(META_BASE + "/api/llms", { headers: { "Accept": "application/json" } })
+				.then(function(r) { return r.ok ? r.json() : { llms: [] }; })
+				.then(function(payload) {
+					// /api/llms is heterogeneous per family:
+					//   - OpenAI/Anthropic/Google: `models: [{ name, display_name, ... }]`
+					//   - Ollama:                   `available_models: [{ value, label, ... }]`
+					// Anon widget uses api_key_uuid = "ollama-local" so only Ollama models
+					// are invocable; filter to that family and use its subshape.
+					var flat = [];
+					(payload.llms || []).forEach(function(llm) {
+						if (llm.family !== "ollama") return;
+						(llm.available_models || []).forEach(function(m) {
+							if (anyAllowedByAllowlist(m.value, MODEL_ALLOWLIST)) {
+								flat.push({ value: m.value, label: m.label });
+							}
+						});
+					});
+					// Ensure the host-configured MODEL is in the list even if the
+					// server doesn't return it — visitor should always see the
+					// current selection, and we don't want to silently switch.
+					if (!flat.some(function(m) { return m.value === MODEL; })) {
+						flat.unshift({ value: MODEL, label: MODEL });
+					}
+					modelPicker.innerHTML = "";
+					flat.forEach(function(m) {
+						var opt = document.createElement("option");
+						opt.value = m.value;
+						opt.textContent = m.label;
+						if (m.value === MODEL) opt.selected = true;
+						modelPicker.appendChild(opt);
+					});
+					if (flat.length > 1) modelPicker.style.display = "";
+				})
+				.catch(function(e) { console.warn("[widget] model list fetch failed:", e); }));
+		}
+
+		if (ENABLE_TOOL_PICKER && toolsListEl) {
+			tasks.push(fetch(META_BASE + "/api/mcp_servers", { headers: { "Accept": "application/json" } })
+				.then(function(r) { return r.ok ? r.json() : { mcp_servers: [] }; })
+				.then(function(payload) {
+					hubMcpServers = (payload.mcp_servers || []).filter(function(s) {
+						return anyAllowedByAllowlist(s.name, HUB_TOOLS_ALLOWLIST);
+					});
+					toolsListEl.innerHTML = "";
+					if (hubMcpServers.length === 0) {
+						var empty = document.createElement("div");
+						empty.className = "lmw-tools-empty";
+						empty.textContent = "No hub-registered tools available.";
+						toolsListEl.appendChild(empty);
+						return;
+					}
+					hubMcpServers.forEach(function(s) {
+						var serverBlock = document.createElement("div");
+						serverBlock.className = "lmw-tools-server";
+
+						// Server header row: bulk checkbox + name + tool count + expand caret.
+						// Bulk checkbox toggles ALL of the server's tools at once and reflects
+						// the mix of child states (indeterminate when partial).
+						var headerRow = document.createElement("div");
+						headerRow.className = "lmw-tools-server-row";
+
+						var bulkCb = document.createElement("input");
+						bulkCb.type = "checkbox";
+						bulkCb.className = "lmw-tools-server-bulk";
+						bulkCb.title = "Enable all tools on this server";
+						bulkCb.addEventListener("click", function(e) {
+							// Prevent header-row click from toggling expand.
+							e.stopPropagation();
+						});
+						bulkCb.addEventListener("change", function() {
+							var shouldOn = bulkCb.checked;
+							(s.tools || []).forEach(function(t) {
+								if (shouldOn) selectedToolIds.add(t.id);
+								else          selectedToolIds.delete(t.id);
+							});
+							bulkCb.indeterminate = false;
+							// Sync every visible individual checkbox for this server.
+							childList.querySelectorAll('input[type="checkbox"]').forEach(function(cb) {
+								cb.checked = shouldOn;
+							});
+							refreshRemoteToolsFromPicker();
+						});
+
+						var nameSpan = document.createElement("span");
+						nameSpan.className = "lmw-tools-server-name";
+						var toolCount = (s.tools || []).length;
+						nameSpan.textContent = s.name + " (" + toolCount + " tool" + (toolCount === 1 ? "" : "s") + ")";
+
+						var caret = document.createElement("span");
+						caret.className = "lmw-tools-server-caret";
+						caret.textContent = "▸";
+
+						headerRow.appendChild(bulkCb);
+						headerRow.appendChild(nameSpan);
+						headerRow.appendChild(caret);
+
+						// Individual-tool rows — one checkbox per tool, indented.
+						// Hidden by default; header click expands. This mirrors
+						// chat.aibranch.org's lazy-expand server UX.
+						var childList = document.createElement("div");
+						childList.className = "lmw-tools-server-children";
+						childList.style.display = "none";
+
+						(s.tools || []).forEach(function(t) {
+							var toolLabel = document.createElement("label");
+							toolLabel.className = "lmw-tools-item lmw-tools-item-child";
+							toolLabel.title = t.description || t.name;
+							var cb = document.createElement("input");
+							cb.type = "checkbox";
+							cb.value = t.id;
+							cb.checked = selectedToolIds.has(t.id);
+							cb.addEventListener("change", function() {
+								if (cb.checked) selectedToolIds.add(t.id);
+								else            selectedToolIds.delete(t.id);
+								refreshServerBulkCheckbox(s, bulkCb);
+								refreshRemoteToolsFromPicker();
+							});
+							var span = document.createElement("span");
+							span.textContent = t.name;
+							toolLabel.appendChild(cb);
+							toolLabel.appendChild(span);
+							childList.appendChild(toolLabel);
+						});
+
+						headerRow.addEventListener("click", function() {
+							var isOpen = childList.style.display !== "none";
+							childList.style.display = isOpen ? "none" : "block";
+							caret.textContent = isOpen ? "▸" : "▾";
+						});
+
+						serverBlock.appendChild(headerRow);
+						serverBlock.appendChild(childList);
+						toolsListEl.appendChild(serverBlock);
+
+						// Initial bulk-checkbox state (all unchecked at first render).
+						refreshServerBulkCheckbox(s, bulkCb);
+					});
+					refreshRemoteToolsFromPicker();
+				})
+				.catch(function(e) { console.warn("[widget] MCP server list fetch failed:", e); }));
+		}
+
+		await Promise.all(tasks);
+	}
+
+	if (modelPicker) {
+		modelPicker.addEventListener("change", function() { MODEL = modelPicker.value; });
+	}
+
+	// Close the tools dropdown on any click outside its area. Native
+	// <details> only closes on summary re-click; visitors expect a
+	// dropdown/popover to dismiss on outside click, matching native
+	// select/menu behavior. `.contains(target)` includes the summary
+	// AND the drop-down list (both are descendants of the <details>).
+	if (toolsPicker) {
+		document.addEventListener("click", function(e) {
+			if (!toolsPicker.open) return;
+			if (toolsPicker.contains(e.target)) return;
+			toolsPicker.open = false;
+		});
+	}
+
+	var pickerLoaded = false;
+	async function ensurePickerLoaded() {
+		if (pickerLoaded) return;
+		pickerLoaded = true;   // set first so parallel opens don't double-fetch
+		try { await loadHubResourcesForPickers(); }
+		catch (e) { pickerLoaded = false; throw e; }
+	}
 
 	// Fetch well-known MCP manifests at boot. Auto-discovers same origin
 	// if WELL_KNOWN_URLS is null; empty array disables entirely.

@@ -25,7 +25,17 @@ module LlmMetaWidget
       # nil → widget auto-discovers same-origin /.well-known/mcp.json at boot;
       # explicit array → fetch those URLs; empty array → disable entirely.
       well_known_urls:         nil,
-      max_rounds:              3
+      max_rounds:              3,
+      # Level-1 pickers — enable visitor-driven selection of model and
+      # hub-registered anon-public MCP tools. See README for the level
+      # taxonomy (0 = independent, 1 = hub anon, 2 = hub signed-in).
+      enable_model_picker:     true,
+      enable_tool_picker:      true,
+      # Host allowlists — nil means "show everything the hub returns for
+      # anon" (all Ollama models / all public_to_anonymous MCP servers).
+      # Pass arrays to curate.
+      models:                  nil,   # e.g. ["qwen3-6-35b-fast", "qwen3-6-35b-no-think"]
+      hub_tools:               nil    # e.g. ["togomcp", "pubdictionaries"] — MCP server names
     }.freeze
 
     def llm_meta_widget(base_url:, model:, **overrides)
