@@ -356,10 +356,13 @@ export async function runChatLoop(opts) {
   const allSkipped = []
   let lastResult = null
 
-  // Client-side de-dupe guard. Weak tool-use models (Ollama qwen3, some
-  // Anthropic Haiku variants) will re-invoke the same tool with the same
-  // arguments after receiving its result, instead of synthesizing a text
-  // answer. Track every (name, args-JSON) tuple we've already dispatched
+  // Client-side de-dupe guard. Written for models that seemed to re-invoke
+  // the same tool with the same arguments after receiving its result.
+  // Much of that turned out to be the hub, not the model: single_llm_turn!
+  // reported every tool call in the history it was given, so the call the
+  // widget had just dispatched came back as a "new" one (fixed in
+  // llm_meta_server 4441f61, 2026-09-20). Kept as defence in depth — a
+  // genuinely repetitive model, or an older hub, still gets caught here. Track every (name, args-JSON) tuple we've already dispatched
   // this loop; when the LLM emits a duplicate, skip it. A round in which
   // ALL tool_calls are duplicates has nothing left to dispatch — treat as
   // the LLM's implicit "I'm done" and terminate with a distinct reason
