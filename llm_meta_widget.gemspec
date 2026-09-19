@@ -5,7 +5,7 @@ Gem::Specification.new do |spec|
   spec.version     = LlmMetaWidget::VERSION
   spec.authors     = [ "jdkim" ]
   spec.email       = [ "jdkim@dbcls.rois.ac.jp" ]
-  spec.homepage    = "https://github.com/pubannotation/llm_meta_widget"
+  spec.homepage    = "https://github.com/jdkim/llm_meta_widget"
   spec.summary     = "Embeddable browser chat widget for the llm_meta ecosystem."
   spec.description = "Client-orchestrated chat widget: fetches host-side aiActions + " \
                      ".well-known/mcp.json manifests, dispatches tool_calls locally or " \
@@ -19,7 +19,10 @@ Gem::Specification.new do |spec|
   spec.metadata["homepage_uri"]    = spec.homepage
   spec.metadata["source_code_uri"] = "#{spec.homepage}/tree/main"
 
-  spec.files = Dir["{app,config,lib}/**/*", "LICENSE", "Rakefile", "README.md", "CHANGELOG.md"].select { File.file?(_1) }
+  # The orchestrator's node tests live beside it but are not part of the gem.
+  spec.files = Dir["{app,config,lib}/**/*", "LICENSE", "Rakefile", "README.md", "CHANGELOG.md"]
+                 .select { File.file?(_1) }
+                 .reject { _1.end_with?(".test.mjs") }
 
   # Deliberately minimal — the widget is a Rails engine that renders a
   # partial + serves a JS asset via a controller. Compatible with Rails 8.0+
