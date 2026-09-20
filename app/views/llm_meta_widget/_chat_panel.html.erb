@@ -397,7 +397,9 @@
 
 <script type="module">
 	import { runChatLoop, fetchMcpManifest, listMcpPrompts, getMcpPrompt,
-	         listMcpResources, readMcpResource, promptMessagesToText } from "<%= orchestrator_path %>";
+	         listMcpResources, readMcpResource, promptMessagesToText,
+	         loadHostResource, createResourceAttacher, resolvePromptArguments,
+	         promptButtonProps, nextResourceContextLines } from "<%= orchestrator_path %>";
 	import { marked } from "/llm_meta_widget_assets/marked.esm.js";
 
 	// Standard prose settings — GFM (tables, autolinks, strikethrough),
@@ -752,25 +754,18 @@
 	// if WELL_KNOWN_URLS is null; empty array disables entirely.
 	var hostWideTools = [];
 	var hostWidePrompts = [];
-	var resourceContext = null;   // catalog JSON pre-attached to the first turn
+	var resourceContext = null;   // payload of the host's reference resource
+	var resourceAttacher = null;  // per-turn gate, built from the server's hint
+	var resourcePlan = null;      // the pre-flight decision, kept so Clear can re-arm the gate
 
-	// Beyond ~2k tokens the catalog starts crowding out the conversation on a
-	// 32k-context local model — production PubDictionaries is 218 dictionaries
-	// / ~35KB / ~10k tokens. Over this, fall back to names only.
-	var RESOURCE_MAX_BYTES = 8000;
+	// Beyond ~2k tokens a reference resource starts crowding out the
+	// conversation on a 32k-context local model — production PubDictionaries
+	// is 218 dictionaries / ~35KB / ~10k tokens.
+	var RESOURCE_BUDGET_BYTES = 8000;
 
-	function trimResourceText(text) {
-		if (text.length <= RESOURCE_MAX_BYTES) return text;
-		try {
-			var parsed = JSON.parse(text);
-			var rows = parsed && parsed.dictionaries;
-			if (Array.isArray(rows)) {
-				var names = rows.map(function(d) { return d && d.name; }).filter(Boolean);
-				return JSON.stringify({ dictionaries: names, note: "names only — full catalog too large to inline" });
-			}
-		} catch (e) { /* fall through to a hard truncation */ }
-		return text.slice(0, RESOURCE_MAX_BYTES) + "\n…truncated";
-	}
+	// Set when a server declared a resource we deliberately did not attach,
+	// so the reason is inspectable rather than a silent absence.
+	var resourceSkip = null;
 
 	var wellKnownReady = (async function() {
 		var urls = WELL_KNOWN_URLS === null
@@ -795,19 +790,24 @@
 			hostWidePrompts = hostWidePrompts.concat(prompts);
 
 			if (resourceContext === null) {
-				var resources = await listMcpResources({ endpoint: endpoint });
-				var catalog = resources.filter(function(r) {
-					return (r.mimeType || "") === "application/json";
-				})[0];
-				if (catalog) {
-					try {
-						var read = await readMcpResource({ endpoint: endpoint, uri: catalog.uri });
-						var entry = (read && read.contents || [])[0];
-						if (entry && entry.text) {
-							resourceContext = { uri: catalog.uri, name: catalog.name || catalog.uri,
-							                    text: trimResourceText(entry.text) };
-						}
-					} catch (e) { /* optional context — never block the widget */ }
+				// Listing, size gate and read all live in the orchestrator, where
+				// they are tested together — a gate nothing consults is exactly
+				// the bug this shape prevents.
+				var loaded = await loadHostResource({
+					endpoint:    endpoint,
+					budgetBytes: RESOURCE_BUDGET_BYTES,
+					list:        listMcpResources,
+					read:        readMcpResource,
+					onSkip: function(plan) {
+						resourceSkip = plan;
+						console.info("[llm_meta_widget] not attaching " + plan.uri +
+						             " (" + plan.reason + ", sizeBytes=" + plan.sizeBytes + ")");
+					}
+				});
+				if (loaded && loaded.context) {
+					resourceContext  = loaded.context;
+					resourcePlan     = loaded.plan;
+					resourceAttacher = createResourceAttacher(loaded.plan);
 				}
 			}
 		}
@@ -823,30 +823,18 @@
 
 	var promptsEl = root.querySelector(".lmw-prompts");
 
-	// Fill an argument from page state where we can recognise it by name.
-	// `dictionaries` takes the CSV shape the text_annotation tool uses, which
-	// is why the prompt declares it that way: the page selects a LIST.
-	function promptArgFromPage(argName) {
-		var state = window[STATE_GLOBAL] || {};
-		if (argName === "text" && typeof state.text === "function") return state.text();
-		if (argName === "dictionaries" && typeof state.selected_dictionaries === "function") {
-			var selected = state.selected_dictionaries() || [];
-			return Array.isArray(selected) ? selected.join(",") : String(selected);
-		}
-		return "";
-	}
-
 	function renderPromptButtons() {
 		if (!promptsEl) return;
 		promptsEl.textContent = "";
 		if (!hostWidePrompts.length) { promptsEl.style.display = "none"; return; }
 
 		hostWidePrompts.forEach(function(prompt) {
+			var props = promptButtonProps(prompt);
 			var button = document.createElement("button");
 			button.type = "button";
 			button.className = "lmw-prompt";
-			button.textContent = prompt.title || prompt.name;
-			button.title = prompt.description || ("Run the " + prompt.name + " prompt");
+			button.textContent = props.label;
+			button.title = props.title;
 			button.addEventListener("click", function() { runPromptTemplate(prompt, button); });
 			promptsEl.appendChild(button);
 		});
@@ -854,13 +842,9 @@
 	}
 
 	async function runPromptTemplate(prompt, button) {
-		var args = {};
-		var missing = [];
-		(prompt.arguments || []).forEach(function(arg) {
-			var value = promptArgFromPage(arg.name);
-			if (value) args[arg.name] = value;
-			else if (arg.required) missing.push(arg.name);
-		});
+		var resolved = resolvePromptArguments(prompt, window[STATE_GLOBAL] || {});
+		var args = resolved.args;
+		var missing = resolved.missing;
 
 		// Say which page field is empty rather than letting the server answer
 		// -32602 for something the user can actually fix on screen.
@@ -991,18 +975,13 @@
 		].concat(resourceContextLines()).join("\n");
 	}
 
-	// Reference data read once from the host's MCP resource, attached to the
-	// FIRST turn only: it is static, and re-sending it every turn would cost
-	// its full size again on each one.
-	var resourceContextSent = false;
-
+	// How often the resource is attached is the SERVER's call, via the
+	// extension's attachmentHint: 'once' for static reference data (the
+	// default, and what a hint-unaware server gets), 'each-turn' for content
+	// that varies. The attacher records each turn's answer, replacing a
+	// client-side boolean that assumed every resource was static.
 	function resourceContextLines() {
-		if (!resourceContext || resourceContextSent) return [];
-		return [
-			"",
-			"Reference data — " + resourceContext.name + " (" + resourceContext.uri + "):",
-			resourceContext.text
-		];
+		return nextResourceContextLines(resourceContext, resourceAttacher);
 	}
 
 	// Per-turn AbortController — lets the Clear button (or a new submit)
@@ -1013,6 +992,9 @@
 		if (currentAbort) { try { currentAbort.abort(); } catch (e) { /* noop */ } }
 		conversation = [];
 		historyEl.innerHTML = "";
+		// Clear starts a new conversation, so a 'once' resource is owed to it
+		// again — the old boolean stayed latched and silently withheld it.
+		if (resourcePlan) resourceAttacher = createResourceAttacher(resourcePlan);
 	});
 
 	// Enter submits, Shift+Enter inserts a newline — matches llm_meta_chat's
@@ -1049,7 +1031,6 @@
 			var messages = [{ role: "system", content: currentSystemPrompt() }]
 				.concat(conversation)
 				.concat([{ role: "user", content: userText }]);
-			resourceContextSent = true;
 
 			var result = await runChatLoop({
 				baseUrl:       META_BASE,

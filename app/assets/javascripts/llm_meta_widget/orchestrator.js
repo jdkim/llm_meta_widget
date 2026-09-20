@@ -776,3 +776,170 @@ function parseSseFrame(raw) {
   }
   return { name, data }
 }
+
+// ---- static-primitives extension ---------------------------------------
+//
+// Prototype of `io.modelcontextprotocol/static-primitives` (the SEP-2127
+// follow-on): two optional fields a server may declare on a resources/list
+// entry. `sizeBytes` is the byte length of the payload resources/read would
+// return, so a client can decide whether to attach it BEFORE fetching it.
+// `attachmentHint` says how often attaching is worth it.
+//
+// Both are optional, and a server that declares neither must behave exactly
+// as it did before the extension existed: fetch, trim to budget, attach once.
+export const STATIC_PRIMITIVES_META = "io.modelcontextprotocol/static-primitives"
+
+const ATTACHMENT_HINTS = [ "once", "each-turn", "on-demand" ]
+
+export function resourceHints(entry) {
+  const meta = (entry && entry._meta && entry._meta[STATIC_PRIMITIVES_META]) || {}
+  const hint = meta.attachmentHint
+  return {
+    // A non-numeric or absent size means "unknown", never 0 — 0 would read
+    // as a free resource and sail through every budget check.
+    sizeBytes: typeof meta.sizeBytes === "number" && isFinite(meta.sizeBytes) ? meta.sizeBytes : null,
+    attachmentHint: ATTACHMENT_HINTS.indexOf(hint) === -1 ? "once" : hint
+  }
+}
+
+// The pre-flight decision, made from the resources/list entry alone.
+// `fetch: false` means the bytes never cross the wire at all.
+export function planResourceAttachment(entry, budgetBytes) {
+  const { sizeBytes, attachmentHint } = resourceHints(entry)
+  const base = { sizeBytes, attachmentHint, uri: entry && entry.uri }
+
+  if (attachmentHint === "on-demand") {
+    return { ...base, fetch: false, autoAttach: false, reason: "on-demand" }
+  }
+  if (sizeBytes !== null && sizeBytes > budgetBytes) {
+    return { ...base, fetch: false, autoAttach: false, reason: "over-budget" }
+  }
+  return {
+    ...base,
+    fetch: true,
+    autoAttach: true,
+    // Unknown size still gets fetched, then trimmed — the trim is the
+    // safety net for servers that do not declare a size.
+    reason: sizeBytes === null ? "size-unknown" : "within-budget"
+  }
+}
+
+// Per-turn gate. Replaces a single `sent` boolean, which silently assumed
+// every resource was "once" and would have re-sent nothing for a resource
+// whose content actually varies between turns.
+export function createResourceAttacher(plan) {
+  let attachedOnce = false
+  return {
+    // Returns whether to attach on THIS turn, and records the answer.
+    take() {
+      if (!plan || !plan.autoAttach) return false
+      if (plan.attachmentHint === "each-turn") return true
+      if (attachedOnce) return false
+      attachedOnce = true
+      return true
+    },
+    get attachmentHint() { return plan ? plan.attachmentHint : null }
+  }
+}
+
+// Safety net for a server that declares no size: shrink an oversized
+// catalog to its names rather than dropping it, and hard-truncate anything
+// that is not a recognised catalog shape.
+export function trimResourceText(text, maxBytes) {
+  if (text.length <= maxBytes) return text
+  try {
+    const parsed = JSON.parse(text)
+    const rows = parsed && parsed.dictionaries
+    if (Array.isArray(rows)) {
+      const names = rows.map((d) => d && d.name).filter(Boolean)
+      return JSON.stringify({ dictionaries: names, note: "names only — full catalog too large to inline" })
+    }
+  } catch (e) { /* fall through to a hard truncation */ }
+  return text.slice(0, maxBytes) + "\n…truncated"
+}
+
+// The whole discovery sequence for one endpoint's reference resource, kept
+// here rather than in the panel so the decision AND the call site are
+// testable together: a gate that nothing consults is the failure mode this
+// replaces. `list` and `read` are injected so a test can assert that an
+// over-budget resource is never read.
+export async function loadHostResource({ endpoint, budgetBytes, list, read, onSkip }) {
+  const resources = await list({ endpoint })
+  const candidate = (resources || []).filter((r) => (r.mimeType || "") === "application/json")[0]
+  if (!candidate) return null
+
+  const plan = planResourceAttachment(candidate, budgetBytes)
+  if (!plan.fetch) {
+    if (onSkip) onSkip(plan)
+    return { plan, context: null }
+  }
+
+  try {
+    const result = await read({ endpoint, uri: candidate.uri })
+    const entry = ((result && result.contents) || [])[0]
+    if (!entry || !entry.text) return { plan, context: null }
+    return {
+      plan,
+      context: {
+        uri: candidate.uri,
+        name: candidate.name || candidate.uri,
+        text: trimResourceText(entry.text, budgetBytes)
+      }
+    }
+  } catch (e) {
+    // Optional context — a failed read must never block the widget.
+    return { plan, context: null }
+  }
+}
+
+// ---- prompt templates ---------------------------------------------------
+//
+// A server-declared prompt is only useful if the HOST PAGE can fill its
+// arguments, so an argument is matched against the page's own state readers
+// (window.aiState) by name. `dictionaries` is read from a
+// `selected_dictionaries` reader: the page selects a LIST, and the prompt
+// declares the CSV shape the text_annotation tool already takes.
+const PROMPT_ARG_ALIASES = { dictionaries: "selected_dictionaries" }
+
+export function promptArgFromState(argName, state) {
+  const reader = (state && state[argName]) || (state && state[PROMPT_ARG_ALIASES[argName]])
+  if (typeof reader !== "function") return ""
+  let value
+  try {
+    value = reader()
+  } catch (e) {
+    // A throwing page reader is the page's bug, not a reason to break the
+    // widget; treat it as "nothing to fill with".
+    return ""
+  }
+  if (value === null || value === undefined) return ""
+  return Array.isArray(value) ? value.join(",") : String(value)
+}
+
+// Splits a prompt's declared arguments into what the page can supply and
+// what it cannot. Naming the missing ones lets the widget point at the empty
+// field on screen instead of relaying the server's -32602.
+export function resolvePromptArguments(prompt, state) {
+  const args = {}
+  const missing = []
+  for (const arg of (prompt && prompt.arguments) || []) {
+    const value = promptArgFromState(arg.name, state)
+    if (value) args[arg.name] = value
+    else if (arg.required) missing.push(arg.name)
+  }
+  return { args, missing }
+}
+
+export function promptButtonProps(prompt) {
+  return {
+    label: prompt.title || prompt.name,
+    title: prompt.description || ("Run the " + prompt.name + " prompt")
+  }
+}
+
+// The per-turn attach decision AND its formatting, so the two cannot drift
+// apart: asking whether to attach is what consumes the turn.
+export function nextResourceContextLines(context, attacher) {
+  if (!context || !attacher || !attacher.take()) return []
+  return [ "", "Reference data — " + context.name + " (" + context.uri + "):", context.text ]
+}

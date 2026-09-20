@@ -9,7 +9,11 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { parseSseStream, dispatchLocalToolCalls, runChatLoop, callMcpTool, fetchMcpManifest,
+import { resourceHints, planResourceAttachment, createResourceAttacher, trimResourceText,
+         loadHostResource, promptArgFromState, resolvePromptArguments,
+         promptButtonProps, nextResourceContextLines,
+         STATIC_PRIMITIVES_META,
+         parseSseStream, dispatchLocalToolCalls, runChatLoop, callMcpTool, fetchMcpManifest,
          listMcpPrompts, getMcpPrompt, listMcpResources, readMcpResource,
          promptMessagesToText } from "./orchestrator.js"
 
@@ -903,4 +907,264 @@ test("promptMessagesToText joins multiple messages", () => {
     ] }),
     "first\n\nsecond"
   )
+})
+
+// ---- static-primitives extension ---------------------------------------
+
+const withMeta = (fields) => ({
+  uri: "pubdictionaries://dictionaries",
+  mimeType: "application/json",
+  _meta: { [STATIC_PRIMITIVES_META]: fields }
+})
+
+test("resourceHints reads sizeBytes and attachmentHint from the extension slot", () => {
+  const hints = resourceHints(withMeta({ sizeBytes: 1298, attachmentHint: "once" }))
+  assert.equal(hints.sizeBytes, 1298)
+  assert.equal(hints.attachmentHint, "once")
+})
+
+test("resourceHints defaults to once when the server declares nothing", () => {
+  // A hint-unaware server must keep behaving exactly as it did before the
+  // extension existed, or upgrading the widget regresses it.
+  const hints = resourceHints({ uri: "x://y" })
+  assert.equal(hints.sizeBytes, null)
+  assert.equal(hints.attachmentHint, "once")
+})
+
+test("resourceHints treats an unrecognised hint as once", () => {
+  assert.equal(resourceHints(withMeta({ attachmentHint: "hourly" })).attachmentHint, "once")
+})
+
+test("resourceHints reports an unusable sizeBytes as unknown, not zero", () => {
+  // Zero would read as a free resource and pass every budget check.
+  assert.equal(resourceHints(withMeta({ sizeBytes: "1298" })).sizeBytes, null)
+  assert.equal(resourceHints(withMeta({ sizeBytes: Infinity })).sizeBytes, null)
+})
+
+test("planResourceAttachment attaches a resource that fits the budget", () => {
+  const plan = planResourceAttachment(withMeta({ sizeBytes: 1298, attachmentHint: "once" }), 8000)
+  assert.equal(plan.fetch, true)
+  assert.equal(plan.autoAttach, true)
+  assert.equal(plan.reason, "within-budget")
+})
+
+test("planResourceAttachment skips an over-budget resource without fetching it", () => {
+  // Production PubDictionaries is ~35KB against an 8KB budget: the bytes
+  // should never cross the wire, rather than be fetched and then trimmed.
+  const plan = planResourceAttachment(withMeta({ sizeBytes: 35318, attachmentHint: "once" }), 8000)
+  assert.equal(plan.fetch, false)
+  assert.equal(plan.autoAttach, false)
+  assert.equal(plan.reason, "over-budget")
+})
+
+test("planResourceAttachment still fetches when the size is undeclared", () => {
+  const plan = planResourceAttachment({ uri: "x://y" }, 8000)
+  assert.equal(plan.fetch, true)
+  assert.equal(plan.reason, "size-unknown")
+})
+
+test("planResourceAttachment never auto-attaches an on-demand resource", () => {
+  const plan = planResourceAttachment(withMeta({ sizeBytes: 10, attachmentHint: "on-demand" }), 8000)
+  assert.equal(plan.autoAttach, false)
+  assert.equal(plan.reason, "on-demand")
+})
+
+test("createResourceAttacher attaches a once resource on the first turn only", () => {
+  const attacher = createResourceAttacher(planResourceAttachment(withMeta({ sizeBytes: 10, attachmentHint: "once" }), 8000))
+  assert.equal(attacher.take(), true)
+  assert.equal(attacher.take(), false)
+  assert.equal(attacher.take(), false)
+})
+
+test("createResourceAttacher re-attaches an each-turn resource every turn", () => {
+  const attacher = createResourceAttacher(planResourceAttachment(withMeta({ sizeBytes: 10, attachmentHint: "each-turn" }), 8000))
+  assert.equal(attacher.take(), true)
+  assert.equal(attacher.take(), true)
+})
+
+test("createResourceAttacher never attaches an on-demand resource", () => {
+  const attacher = createResourceAttacher(planResourceAttachment(withMeta({ attachmentHint: "on-demand" }), 8000))
+  assert.equal(attacher.take(), false)
+  assert.equal(attacher.take(), false)
+})
+
+test("createResourceAttacher never attaches an over-budget resource", () => {
+  const attacher = createResourceAttacher(planResourceAttachment(withMeta({ sizeBytes: 99999 }), 8000))
+  assert.equal(attacher.take(), false)
+})
+
+test("trimResourceText reduces an oversized catalog to its names", () => {
+  const big = JSON.stringify({ dictionaries: [ { name: "uberon", description: "x".repeat(200) },
+                                                { name: "mondo", description: "y".repeat(200) } ] })
+  const trimmed = JSON.parse(trimResourceText(big, 100))
+  assert.deepEqual(trimmed.dictionaries, [ "uberon", "mondo" ])
+})
+
+test("trimResourceText leaves text that already fits untouched", () => {
+  assert.equal(trimResourceText("small", 100), "small")
+})
+
+test("trimResourceText hard-truncates an unrecognised shape", () => {
+  const trimmed = trimResourceText("z".repeat(200), 50)
+  assert.ok(trimmed.startsWith("z".repeat(50)))
+  assert.ok(trimmed.endsWith("…truncated"))
+})
+
+// ---- loadHostResource: the gate and its call site, together --------------
+
+const listing = (fields) => async () => [ withMeta(fields) ]
+const payload = { contents: [ { text: JSON.stringify({ dictionaries: [ { name: "uberon" } ] }) } ] }
+
+test("loadHostResource reads a resource that fits the budget", async () => {
+  let readCalls = 0
+  const out = await loadHostResource({
+    endpoint: "/mcp", budgetBytes: 8000,
+    list: listing({ sizeBytes: 100, attachmentHint: "once" }),
+    read: async () => { readCalls++; return payload }
+  })
+  assert.equal(readCalls, 1)
+  assert.equal(out.plan.autoAttach, true)
+  assert.ok(out.context.text.includes("uberon"))
+})
+
+test("loadHostResource never reads an over-budget resource", async () => {
+  // The point of a declared size: the bytes do not cross the wire at all.
+  let readCalls = 0
+  const skips = []
+  const out = await loadHostResource({
+    endpoint: "/mcp", budgetBytes: 8000,
+    list: listing({ sizeBytes: 35318, attachmentHint: "once" }),
+    read: async () => { readCalls++; return payload },
+    onSkip: (plan) => skips.push(plan.reason)
+  })
+  assert.equal(readCalls, 0)
+  assert.equal(out.context, null)
+  assert.deepEqual(skips, [ "over-budget" ])
+})
+
+test("loadHostResource never reads an on-demand resource", async () => {
+  let readCalls = 0
+  const out = await loadHostResource({
+    endpoint: "/mcp", budgetBytes: 8000,
+    list: listing({ sizeBytes: 10, attachmentHint: "on-demand" }),
+    read: async () => { readCalls++; return payload }
+  })
+  assert.equal(readCalls, 0)
+  assert.equal(out.plan.reason, "on-demand")
+})
+
+test("loadHostResource still reads when the server declares no size", async () => {
+  let readCalls = 0
+  const out = await loadHostResource({
+    endpoint: "/mcp", budgetBytes: 8000,
+    list: async () => [ { uri: "x://y", mimeType: "application/json" } ],
+    read: async () => { readCalls++; return payload }
+  })
+  assert.equal(readCalls, 1)
+  assert.equal(out.plan.reason, "size-unknown")
+})
+
+test("loadHostResource trims an oversized undeclared payload rather than dropping it", async () => {
+  const big = JSON.stringify({ dictionaries: Array.from({ length: 50 },
+    (_, i) => ({ name: "d" + i, description: "x".repeat(200) })) })
+  const out = await loadHostResource({
+    endpoint: "/mcp", budgetBytes: 500,
+    list: async () => [ { uri: "x://y", mimeType: "application/json" } ],
+    read: async () => ({ contents: [ { text: big } ] })
+  })
+  assert.ok(out.context.text.includes("names only"))
+})
+
+test("loadHostResource returns null when the host offers no JSON resource", async () => {
+  const out = await loadHostResource({
+    endpoint: "/mcp", budgetBytes: 8000,
+    list: async () => [ { uri: "x://y", mimeType: "text/plain" } ],
+    read: async () => { throw new Error("must not be read") }
+  })
+  assert.equal(out, null)
+})
+
+test("loadHostResource survives a failing read", async () => {
+  const out = await loadHostResource({
+    endpoint: "/mcp", budgetBytes: 8000,
+    list: listing({ sizeBytes: 10 }),
+    read: async () => { throw new Error("boom") }
+  })
+  assert.equal(out.context, null)
+})
+
+// ---- prompt templates ---------------------------------------------------
+
+const pageState = {
+  text: () => "The stomach was examined.",
+  selected_dictionaries: () => [ "uberon", "mondo_disease" ]
+}
+
+test("promptArgFromState reads an argument named after a page reader", () => {
+  assert.equal(promptArgFromState("text", pageState), "The stomach was examined.")
+})
+
+test("promptArgFromState joins a list argument into the CSV shape the tool takes", () => {
+  assert.equal(promptArgFromState("dictionaries", pageState), "uberon,mondo_disease")
+})
+
+test("promptArgFromState returns empty for an argument the page cannot supply", () => {
+  assert.equal(promptArgFromState("threshold", pageState), "")
+})
+
+test("promptArgFromState survives a throwing page reader", () => {
+  assert.equal(promptArgFromState("text", { text: () => { throw new Error("page bug") } }), "")
+})
+
+test("promptArgFromState treats an empty selection as nothing to fill with", () => {
+  assert.equal(promptArgFromState("dictionaries", { selected_dictionaries: () => [] }), "")
+})
+
+test("resolvePromptArguments fills what the page has", () => {
+  const prompt = { arguments: [ { name: "text", required: true }, { name: "dictionaries", required: true } ] }
+  const { args, missing } = resolvePromptArguments(prompt, pageState)
+  assert.deepEqual(args, { text: "The stomach was examined.", dictionaries: "uberon,mondo_disease" })
+  assert.deepEqual(missing, [])
+})
+
+test("resolvePromptArguments names the required arguments the page cannot fill", () => {
+  // The user can fix an empty text box; they cannot fix a -32602.
+  const prompt = { arguments: [ { name: "text", required: true }, { name: "dictionaries", required: true } ] }
+  const { args, missing } = resolvePromptArguments(prompt, { selected_dictionaries: () => [ "uberon" ] })
+  assert.deepEqual(args, { dictionaries: "uberon" })
+  assert.deepEqual(missing, [ "text" ])
+})
+
+test("resolvePromptArguments ignores an optional argument the page lacks", () => {
+  const prompt = { arguments: [ { name: "text", required: true }, { name: "threshold" } ] }
+  assert.deepEqual(resolvePromptArguments(prompt, pageState).missing, [])
+})
+
+test("promptButtonProps prefers the server's title and description", () => {
+  assert.deepEqual(promptButtonProps({ name: "annotate", title: "Annotate text", description: "Annotate a passage." }),
+                   { label: "Annotate text", title: "Annotate a passage." })
+})
+
+test("promptButtonProps falls back to the prompt name", () => {
+  assert.deepEqual(promptButtonProps({ name: "annotate" }),
+                   { label: "annotate", title: "Run the annotate prompt" })
+})
+
+test("nextResourceContextLines attaches once, then stops", () => {
+  const ctx = { name: "catalog", uri: "x://y", text: "{}" }
+  const attacher = createResourceAttacher({ autoAttach: true, attachmentHint: "once" })
+  assert.equal(nextResourceContextLines(ctx, attacher).length, 3)
+  assert.deepEqual(nextResourceContextLines(ctx, attacher), [])
+})
+
+test("nextResourceContextLines attaches nothing when there is no resource", () => {
+  const attacher = createResourceAttacher({ autoAttach: true, attachmentHint: "once" })
+  assert.deepEqual(nextResourceContextLines(null, attacher), [])
+})
+
+test("nextResourceContextLines re-attaches an each-turn resource", () => {
+  const ctx = { name: "catalog", uri: "x://y", text: "{}" }
+  const attacher = createResourceAttacher({ autoAttach: true, attachmentHint: "each-turn" })
+  assert.equal(nextResourceContextLines(ctx, attacher).length, 3)
+  assert.equal(nextResourceContextLines(ctx, attacher).length, 3)
 })
