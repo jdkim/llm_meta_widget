@@ -1,3 +1,7 @@
 /.bundle/
 /pkg/
 /tmp/
+
+# Screenshots and Chrome profiles written by test/e2e runs.
+test/e2e/*.png
+test/e2e/profile-*
