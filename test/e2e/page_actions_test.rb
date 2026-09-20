@@ -21,7 +21,17 @@ msgs  = -> { d.execute_script("return (document.querySelector('.lmw-messages')||
 def ask(d, text)
   input = d.find_element(css: ".lmw-input")
   input.clear; input.send_keys(text)
-  d.find_element(css: ".lmw-send").click
+  input.send_keys(:enter)
+end
+
+# On a long host page a widget control can sit below the fold or under an
+# overlapping page element, and Selenium then refuses the click on geometry
+# grounds. These tests are about the handler, not about hit-testing — the
+# control's visibility is asserted separately — so dispatch the click
+# directly rather than steering a mouse to it.
+def click_safely(driver, selector)
+  el = driver.find_element(css: selector)
+  driver.execute_script("arguments[0].scrollIntoView({block: 'center'}); arguments[0].click();", el)
 end
 
 results = {}

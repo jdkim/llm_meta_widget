@@ -398,8 +398,8 @@
 <script type="module">
 	import { runChatLoop, fetchMcpManifest, listMcpPrompts, getMcpPrompt,
 	         listMcpResources, readMcpResource, promptMessagesToText,
-	         loadHostResource, createResourceAttacher, resolvePromptArguments,
-	         promptButtonProps, nextResourceContextLines } from "<%= orchestrator_path %>";
+	         loadHostResource, createResourceAttacher, resourceLinesForTurn, resolvePromptArguments,
+	         promptButtonProps } from "<%= orchestrator_path %>";
 	import { marked } from "/llm_meta_widget_assets/marked.esm.js";
 
 	// Standard prose settings — GFM (tables, autolinks, strikethrough),
@@ -789,7 +789,7 @@
 			var prompts = await listMcpPrompts({ endpoint: endpoint });
 			hostWidePrompts = hostWidePrompts.concat(prompts);
 
-			if (resourceContext === null) {
+			if (resourcePlan === null) {
 				// Listing, size gate and read all live in the orchestrator, where
 				// they are tested together — a gate nothing consults is exactly
 				// the bug this shape prevents.
@@ -804,7 +804,10 @@
 						             " (" + plan.reason + ", sizeBytes=" + plan.sizeBytes + ")");
 					}
 				});
-				if (loaded && loaded.context) {
+				// A volatile resource comes back with no context — it is read
+				// per turn instead — so the plan, not the payload, is what says
+				// whether this endpoint offered anything worth attaching.
+				if (loaded && loaded.plan && loaded.plan.fetch) {
 					resourceContext  = loaded.context;
 					resourcePlan     = loaded.plan;
 					resourceAttacher = createResourceAttacher(loaded.plan);
@@ -960,7 +963,7 @@
 		return out;
 	}
 
-	function currentSystemPrompt() {
+	function currentSystemPrompt(resourceLines) {
 		return [
 			"You are integrated into a web page as an AI assistant. You have tools available to change page state or fetch information.",
 			"",
@@ -972,16 +975,27 @@
 			"",
 			"Current page state:",
 			JSON.stringify(currentPageState(), null, 2)
-		].concat(resourceContextLines()).join("\n");
+		].concat(resourceLines || []).join("\n");
 	}
 
-	// How often the resource is attached is the SERVER's call, via the
-	// extension's attachmentHint: 'once' for static reference data (the
-	// default, and what a hint-unaware server gets), 'each-turn' for content
-	// that varies. The attacher records each turn's answer, replacing a
-	// client-side boolean that assumed every resource was static.
-	function resourceContextLines() {
-		return nextResourceContextLines(resourceContext, resourceAttacher);
+	// Whether to attach, and how often, is the SERVER's call — via the
+	// extension's autoAttach and volatility fields, which default to
+	// attach-once for a server that declares neither.
+	//
+	// Asking consumes the turn, and a volatile resource is re-read here rather
+	// than re-using the boot-time copy — so this runs once per send, before
+	// the system prompt is built.
+	async function resourceLinesForThisTurn() {
+		var turn = await resourceLinesForTurn({
+			plan:        resourcePlan,
+			attacher:    resourceAttacher,
+			cached:      resourceContext,
+			endpoint:    resourcePlan && resourcePlan.endpoint,
+			read:        readMcpResource,
+			budgetBytes: RESOURCE_BUDGET_BYTES
+		});
+		resourceContext = turn.cached;
+		return turn.lines;
 	}
 
 	// Per-turn AbortController — lets the Clear button (or a new submit)
@@ -1028,7 +1042,8 @@
 			// it as sent.
 			await wellKnownReady;
 
-			var messages = [{ role: "system", content: currentSystemPrompt() }]
+			var resourceLines = await resourceLinesForThisTurn();
+			var messages = [{ role: "system", content: currentSystemPrompt(resourceLines) }]
 				.concat(conversation)
 				.concat([{ role: "user", content: userText }]);
 

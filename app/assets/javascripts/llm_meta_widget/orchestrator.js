@@ -780,38 +780,50 @@ function parseSseFrame(raw) {
 // ---- static-primitives extension ---------------------------------------
 //
 // Prototype of `io.modelcontextprotocol/static-primitives` (the SEP-2127
-// follow-on): two optional fields a server may declare on a resources/list
-// entry. `sizeBytes` is the byte length of the payload resources/read would
-// return, so a client can decide whether to attach it BEFORE fetching it.
-// `attachmentHint` says how often attaching is worth it.
+// follow-on). Three optional fields a server may declare on a resources/list
+// entry:
 //
-// Both are optional, and a server that declares neither must behave exactly
-// as it did before the extension existed: fetch, trim to budget, attach once.
+//   sizeBytes  - byte length of the payload resources/read would return, so a
+//                client can decide whether to attach it BEFORE fetching it.
+//   volatility - "stable" (content fixed) or "volatile" (varies between
+//                turns, so a client re-reads it each turn).
+//   autoAttach - may a client attach this without the user asking for it?
+//
+// volatility and autoAttach are separate on purpose. Whether content changes
+// says nothing about whether it may be attached unasked, and the client needs
+// autoAttach as a boolean anyway, because its own byte budget can withhold a
+// resource the server was happy to hand over.
+//
+// All three are optional, and a server declaring none must behave exactly as
+// it did before the extension existed: fetch once, trim to budget, attach on
+// the first turn only.
 export const STATIC_PRIMITIVES_META = "io.modelcontextprotocol/static-primitives"
 
-const ATTACHMENT_HINTS = [ "once", "each-turn", "on-demand" ]
+const VOLATILITIES = [ "stable", "volatile" ]
 
 export function resourceHints(entry) {
   const meta = (entry && entry._meta && entry._meta[STATIC_PRIMITIVES_META]) || {}
-  const hint = meta.attachmentHint
   return {
     // A non-numeric or absent size means "unknown", never 0 — 0 would read
     // as a free resource and sail through every budget check.
     sizeBytes: typeof meta.sizeBytes === "number" && isFinite(meta.sizeBytes) ? meta.sizeBytes : null,
-    attachmentHint: ATTACHMENT_HINTS.indexOf(hint) === -1 ? "once" : hint
+    volatility: VOLATILITIES.indexOf(meta.volatility) === -1 ? "stable" : meta.volatility,
+    autoAttach: typeof meta.autoAttach === "boolean" ? meta.autoAttach : true
   }
 }
 
 // The pre-flight decision, made from the resources/list entry alone.
 // `fetch: false` means the bytes never cross the wire at all.
 export function planResourceAttachment(entry, budgetBytes) {
-  const { sizeBytes, attachmentHint } = resourceHints(entry)
-  const base = { sizeBytes, attachmentHint, uri: entry && entry.uri }
+  const { sizeBytes, volatility, autoAttach } = resourceHints(entry)
+  const base = { sizeBytes, volatility, uri: entry && entry.uri }
 
-  if (attachmentHint === "on-demand") {
-    return { ...base, fetch: false, autoAttach: false, reason: "on-demand" }
+  if (!autoAttach) {
+    return { ...base, fetch: false, autoAttach: false, reason: "not-auto-attach" }
   }
   if (sizeBytes !== null && sizeBytes > budgetBytes) {
+    // The client's budget overrides the server's willingness — which is why
+    // autoAttach has to be a boolean here rather than a restatement of a hint.
     return { ...base, fetch: false, autoAttach: false, reason: "over-budget" }
   }
   return {
@@ -824,21 +836,19 @@ export function planResourceAttachment(entry, budgetBytes) {
   }
 }
 
-// Per-turn gate. Replaces a single `sent` boolean, which silently assumed
-// every resource was "once" and would have re-sent nothing for a resource
-// whose content actually varies between turns.
+// Per-turn gate. A stable resource is attached once and re-used; a volatile
+// one is owed a fresh copy every turn.
 export function createResourceAttacher(plan) {
   let attachedOnce = false
   return {
-    // Returns whether to attach on THIS turn, and records the answer.
     take() {
       if (!plan || !plan.autoAttach) return false
-      if (plan.attachmentHint === "each-turn") return true
+      if (plan.volatility === "volatile") return true
       if (attachedOnce) return false
       attachedOnce = true
       return true
     },
-    get attachmentHint() { return plan ? plan.attachmentHint : null }
+    get volatility() { return plan ? plan.volatility : null }
   }
 }
 
@@ -858,38 +868,69 @@ export function trimResourceText(text, maxBytes) {
   return text.slice(0, maxBytes) + "\n…truncated"
 }
 
-// The whole discovery sequence for one endpoint's reference resource, kept
-// here rather than in the panel so the decision AND the call site are
-// testable together: a gate that nothing consults is the failure mode this
-// replaces. `list` and `read` are injected so a test can assert that an
-// over-budget resource is never read.
+// Read one resource and shape it for the system prompt. The trim is applied
+// on every read, not just the first: a declared size can go stale, and a
+// volatile resource is a fresh gamble each turn.
+async function readResourceContext({ endpoint, uri, name, read, budgetBytes }) {
+  try {
+    const result = await read({ endpoint, uri })
+    const entry = ((result && result.contents) || [])[0]
+    if (!entry || !entry.text) return null
+    return { uri, name: name || uri, text: trimResourceText(entry.text, budgetBytes) }
+  } catch (e) {
+    // Optional context — a failed read must never block the widget.
+    return null
+  }
+}
+
+// The discovery sequence for one endpoint's reference resource, kept here
+// rather than in the panel so the decision AND the call site are testable
+// together: a gate nothing consults is exactly the bug this shape prevents.
+//
+// A volatile resource is NOT read here. Its content is only meaningful for
+// the turn it is attached to, so reading it at boot would buy a copy that is
+// already suspect by the time anyone sends a message.
 export async function loadHostResource({ endpoint, budgetBytes, list, read, onSkip }) {
   const resources = await list({ endpoint })
   const candidate = (resources || []).filter((r) => (r.mimeType || "") === "application/json")[0]
   if (!candidate) return null
 
   const plan = planResourceAttachment(candidate, budgetBytes)
+  plan.name = candidate.name || candidate.uri
+  // Carried so a volatile re-read knows where to go: discovery happens once
+  // at boot, but the fetch it authorises happens on every later turn.
+  plan.endpoint = endpoint
   if (!plan.fetch) {
     if (onSkip) onSkip(plan)
     return { plan, context: null }
   }
+  if (plan.volatility === "volatile") return { plan, context: null }
 
-  try {
-    const result = await read({ endpoint, uri: candidate.uri })
-    const entry = ((result && result.contents) || [])[0]
-    if (!entry || !entry.text) return { plan, context: null }
-    return {
-      plan,
-      context: {
-        uri: candidate.uri,
-        name: candidate.name || candidate.uri,
-        text: trimResourceText(entry.text, budgetBytes)
-      }
-    }
-  } catch (e) {
-    // Optional context — a failed read must never block the widget.
-    return { plan, context: null }
+  const context = await readResourceContext({
+    endpoint, uri: candidate.uri, name: plan.name, read, budgetBytes
+  })
+  return { plan, context }
+}
+
+export function resourceContextLines(context) {
+  if (!context) return []
+  return [ "", "Reference data — " + context.name + " (" + context.uri + "):", context.text ]
+}
+
+// What to attach on THIS turn. Asking consumes the turn, so the decision and
+// the fetch live together: a stable resource re-uses the copy read at boot,
+// a volatile one is read again right now.
+export async function resourceLinesForTurn({ plan, attacher, cached, endpoint, read, budgetBytes }) {
+  if (!attacher || !attacher.take()) return { lines: [], cached }
+
+  if (plan && plan.volatility === "volatile") {
+    const fresh = await readResourceContext({
+      endpoint, uri: plan.uri, name: plan.name, read, budgetBytes
+    })
+    return fresh ? { lines: resourceContextLines(fresh), cached: fresh } : { lines: [], cached }
   }
+
+  return { lines: resourceContextLines(cached), cached }
 }
 
 // ---- prompt templates ---------------------------------------------------
@@ -937,9 +978,3 @@ export function promptButtonProps(prompt) {
   }
 }
 
-// The per-turn attach decision AND its formatting, so the two cannot drift
-// apart: asking whether to attach is what consumes the turn.
-export function nextResourceContextLines(context, attacher) {
-  if (!context || !attacher || !attacher.take()) return []
-  return [ "", "Reference data — " + context.name + " (" + context.uri + "):", context.text ]
-}

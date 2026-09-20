@@ -35,6 +35,16 @@ INTERCEPT = <<~JS
   })();
 JS
 
+# On a long host page a widget control can sit below the fold or under an
+# overlapping page element, and Selenium then refuses the click on geometry
+# grounds. These tests are about the handler, not about hit-testing — the
+# control's visibility is asserted separately — so dispatch the click
+# directly rather than steering a mouse to it.
+def click_safely(driver, selector)
+  el = driver.find_element(css: selector)
+  driver.execute_script("arguments[0].scrollIntoView({block: 'center'}); arguments[0].click();", el)
+end
+
 results = {}
 begin
   d.navigate.to PAGE
@@ -63,11 +73,11 @@ begin
   # relaying the server's -32602 for something fixable on screen.
   if results[:prompt_button].is_a?(Hash)
     d.execute_script("$('#text').val('');")
-    d.find_element(css: ".lmw-prompt").click
+    click_safely(d, ".lmw-prompt")
     sleep 2
     msg = d.execute_script("return (document.querySelector('.lmw-messages')||{}).innerText || ''")
     results[:empty_page_guard] = msg.include?("nothing to use for") ? "PASS — #{msg[/nothing to use for[^\n]*/]}" : "FAIL — #{msg[0, 200]}"
-    d.find_element(css: ".lmw-clear").click
+    click_safely(d, ".lmw-clear")
   end
 
   # The template's required arguments come from the page, so give the page
@@ -83,7 +93,7 @@ begin
 
   # 2. Clicking the template must fill the box AND travel the normal send path.
   if results[:prompt_button].is_a?(Hash)
-    d.find_element(css: ".lmw-prompt").click
+    click_safely(d, ".lmw-prompt")
     begin
       wait.(60) { d.execute_script("return (window.__bodies || []).some(function(b){ return b.url.indexOf('/api/') >= 0 || b.body.indexOf('\"messages\"') >= 0; })") }
       results[:submitted] = "PASS"
@@ -117,7 +127,7 @@ begin
   before = d.execute_script("return (window.__bodies || []).length")
   input = d.find_element(css: ".lmw-input")
   input.clear; input.send_keys("Thanks, that is all.")
-  d.find_element(css: ".lmw-send").click
+  input.send_keys(:enter)
   begin
     wait.(60) { d.execute_script("return (window.__bodies || []).length > arguments[0]", before) }
     second = d.execute_script("return (window.__bodies || []).slice(arguments[0])", before)
@@ -139,10 +149,10 @@ begin
   #    again. The old latched boolean withheld it silently.
   sleep 10
   before_clear = d.execute_script("return (window.__bodies || []).length")
-  d.find_element(css: ".lmw-clear").click
+  click_safely(d, ".lmw-clear")
   input = d.find_element(css: ".lmw-input")
   input.clear; input.send_keys("Fresh start.")
-  d.find_element(css: ".lmw-send").click
+  input.send_keys(:enter)
   begin
     wait.(60) { d.execute_script("return (window.__bodies || []).length > arguments[0]", before_clear) }
     after = d.execute_script("return (window.__bodies || []).slice(arguments[0])", before_clear)
