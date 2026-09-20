@@ -268,6 +268,31 @@
 		border-radius: 8px;
 		padding: 8px;
 	}
+	/* Server-offered prompt templates. The row is display:none in markup and
+	 * gets its display back only when a prompt actually exists, so the inline
+	 * style and this rule have to agree on "flex". */
+	#llm-meta-widget-chat .lmw-prompts {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		margin-bottom: 8px;
+	}
+	#llm-meta-widget-chat .lmw-prompt {
+		background-color: #eff6ff;
+		color: #1d4ed8;
+		border: 1px solid #bfdbfe;
+		border-radius: 999px;
+		padding: 4px 12px;
+		font-size: 12px;
+		font-family: inherit;
+		cursor: pointer;
+		transition: background-color 0.2s, border-color 0.2s;
+	}
+	#llm-meta-widget-chat .lmw-prompt:hover:not(:disabled) {
+		background-color: #dbeafe;
+		border-color: #93c5fd;
+	}
+	#llm-meta-widget-chat .lmw-prompt:disabled { opacity: 0.5; cursor: default; }
 	#llm-meta-widget-chat .lmw-form { display: flex; flex-direction: column; gap: 8px; }
 	#llm-meta-widget-chat .lmw-input-wrapper { position: relative; flex: 1; }
 	#llm-meta-widget-chat .lmw-input {
@@ -326,6 +351,10 @@
 	</div>
 	<div class="lmw-messages"></div>
 	<div class="lmw-input-container">
+		<%# Server-offered prompt templates (MCP prompts/list). Hidden until a
+		    host MCP server actually offers one, so a tools-only server leaves
+		    the widget exactly as it was. %>
+		<div class="lmw-prompts" style="display:none"></div>
 		<form class="lmw-form">
 			<div class="lmw-input-wrapper">
 				<textarea class="lmw-input" placeholder="Enter your message..." rows="2" autocomplete="off"></textarea>
@@ -367,7 +396,8 @@
 </div>
 
 <script type="module">
-	import { runChatLoop, fetchMcpManifest } from "<%= orchestrator_path %>";
+	import { runChatLoop, fetchMcpManifest, listMcpPrompts, getMcpPrompt,
+	         listMcpResources, readMcpResource, promptMessagesToText } from "<%= orchestrator_path %>";
 	import { marked } from "/llm_meta_widget_assets/marked.esm.js";
 
 	// Standard prose settings — GFM (tables, autolinks, strikethrough),
@@ -721,6 +751,27 @@
 	// Fetch well-known MCP manifests at boot. Auto-discovers same origin
 	// if WELL_KNOWN_URLS is null; empty array disables entirely.
 	var hostWideTools = [];
+	var hostWidePrompts = [];
+	var resourceContext = null;   // catalog JSON pre-attached to the first turn
+
+	// Beyond ~2k tokens the catalog starts crowding out the conversation on a
+	// 32k-context local model — production PubDictionaries is 218 dictionaries
+	// / ~35KB / ~10k tokens. Over this, fall back to names only.
+	var RESOURCE_MAX_BYTES = 8000;
+
+	function trimResourceText(text) {
+		if (text.length <= RESOURCE_MAX_BYTES) return text;
+		try {
+			var parsed = JSON.parse(text);
+			var rows = parsed && parsed.dictionaries;
+			if (Array.isArray(rows)) {
+				var names = rows.map(function(d) { return d && d.name; }).filter(Boolean);
+				return JSON.stringify({ dictionaries: names, note: "names only — full catalog too large to inline" });
+			}
+		} catch (e) { /* fall through to a hard truncation */ }
+		return text.slice(0, RESOURCE_MAX_BYTES) + "\n…truncated";
+	}
+
 	var wellKnownReady = (async function() {
 		var urls = WELL_KNOWN_URLS === null
 			? [ window.location.origin + "/.well-known/mcp.json" ]
@@ -729,7 +780,110 @@
 			var tools = await fetchMcpManifest(urls[i]);
 			hostWideTools = hostWideTools.concat(tools);
 		}
+
+		// The manifest publishes TOOLS only, so the endpoints are learned from
+		// them. A server offering only prompts or resources is invisible here —
+		// worth knowing when deciding what a static manifest should carry.
+		var endpoints = [];
+		hostWideTools.forEach(function(t) {
+			if (t.endpoint && endpoints.indexOf(t.endpoint) === -1) endpoints.push(t.endpoint);
+		});
+
+		for (var j = 0; j < endpoints.length; j++) {
+			var endpoint = endpoints[j];
+			var prompts = await listMcpPrompts({ endpoint: endpoint });
+			hostWidePrompts = hostWidePrompts.concat(prompts);
+
+			if (resourceContext === null) {
+				var resources = await listMcpResources({ endpoint: endpoint });
+				var catalog = resources.filter(function(r) {
+					return (r.mimeType || "") === "application/json";
+				})[0];
+				if (catalog) {
+					try {
+						var read = await readMcpResource({ endpoint: endpoint, uri: catalog.uri });
+						var entry = (read && read.contents || [])[0];
+						if (entry && entry.text) {
+							resourceContext = { uri: catalog.uri, name: catalog.name || catalog.uri,
+							                    text: trimResourceText(entry.text) };
+						}
+					} catch (e) { /* optional context — never block the widget */ }
+				}
+			}
+		}
+		renderPromptButtons();
 	})();
+
+	// ---- server-offered prompt templates --------------------------------
+	//
+	// One button per prompt the host's MCP server offers. Clicking it fills
+	// the prompt's arguments from page state, asks the server to materialise
+	// the message (prompts/get), then drops the text into the textarea and
+	// submits — so it travels the exact path a typed message does.
+
+	var promptsEl = root.querySelector(".lmw-prompts");
+
+	// Fill an argument from page state where we can recognise it by name.
+	// `dictionaries` takes the CSV shape the text_annotation tool uses, which
+	// is why the prompt declares it that way: the page selects a LIST.
+	function promptArgFromPage(argName) {
+		var state = window[STATE_GLOBAL] || {};
+		if (argName === "text" && typeof state.text === "function") return state.text();
+		if (argName === "dictionaries" && typeof state.selected_dictionaries === "function") {
+			var selected = state.selected_dictionaries() || [];
+			return Array.isArray(selected) ? selected.join(",") : String(selected);
+		}
+		return "";
+	}
+
+	function renderPromptButtons() {
+		if (!promptsEl) return;
+		promptsEl.textContent = "";
+		if (!hostWidePrompts.length) { promptsEl.style.display = "none"; return; }
+
+		hostWidePrompts.forEach(function(prompt) {
+			var button = document.createElement("button");
+			button.type = "button";
+			button.className = "lmw-prompt";
+			button.textContent = prompt.title || prompt.name;
+			button.title = prompt.description || ("Run the " + prompt.name + " prompt");
+			button.addEventListener("click", function() { runPromptTemplate(prompt, button); });
+			promptsEl.appendChild(button);
+		});
+		promptsEl.style.display = "";
+	}
+
+	async function runPromptTemplate(prompt, button) {
+		var args = {};
+		var missing = [];
+		(prompt.arguments || []).forEach(function(arg) {
+			var value = promptArgFromPage(arg.name);
+			if (value) args[arg.name] = value;
+			else if (arg.required) missing.push(arg.name);
+		});
+
+		// Say which page field is empty rather than letting the server answer
+		// -32602 for something the user can actually fix on screen.
+		if (missing.length) {
+			appendTurn("error", "Cannot run \"" + (prompt.title || prompt.name) + "\" yet — nothing to use for: " +
+			                     missing.join(", ") + ". Fill that in on the page first.");
+			return;
+		}
+
+		button.disabled = true;
+		try {
+			var result = await getMcpPrompt({ endpoint: prompt.endpoint, name: prompt.name, args: args });
+			var text = promptMessagesToText(result);
+			if (!text) { appendTurn("error", "The server returned an empty prompt."); return; }
+			inputEl.value = text;
+			if (typeof formEl.requestSubmit === "function") formEl.requestSubmit();
+			else formEl.dispatchEvent(new Event("submit", { cancelable: true }));
+		} catch (e) {
+			appendTurn("error", "Prompt failed: " + (e && e.message ? e.message : e));
+		} finally {
+			button.disabled = false;
+		}
+	}
 
 	function appendTurn(role, text) {
 		// Class names mirror llm_meta_chat's chats/_message.html.erb —
@@ -834,7 +988,21 @@
 			"",
 			"Current page state:",
 			JSON.stringify(currentPageState(), null, 2)
-		].join("\n");
+		].concat(resourceContextLines()).join("\n");
+	}
+
+	// Reference data read once from the host's MCP resource, attached to the
+	// FIRST turn only: it is static, and re-sending it every turn would cost
+	// its full size again on each one.
+	var resourceContextSent = false;
+
+	function resourceContextLines() {
+		if (!resourceContext || resourceContextSent) return [];
+		return [
+			"",
+			"Reference data — " + resourceContext.name + " (" + resourceContext.uri + "):",
+			resourceContext.text
+		];
 	}
 
 	// Per-turn AbortController — lets the Clear button (or a new submit)
@@ -868,15 +1036,20 @@
 		if (currentAbort) { try { currentAbort.abort(); } catch (e) { /* noop */ } }
 		currentAbort = new AbortController();
 
-		var messages = [{ role: "system", content: currentSystemPrompt() }]
-			.concat(conversation)
-			.concat([{ role: "user", content: userText }]);
-
 		var assistantBody = appendTurn("assistant", "");
 		var assistantMarkdown = "";  // accumulate raw markdown, re-render on each delta
 
 		try {
+			// Discovery has to finish before the system prompt is built: the
+			// resource catalog is attached to the first turn only, so building
+			// messages first would silently ship that turn without it AND mark
+			// it as sent.
 			await wellKnownReady;
+
+			var messages = [{ role: "system", content: currentSystemPrompt() }]
+				.concat(conversation)
+				.concat([{ role: "user", content: userText }]);
+			resourceContextSent = true;
 
 			var result = await runChatLoop({
 				baseUrl:       META_BASE,

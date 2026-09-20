@@ -9,7 +9,9 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { parseSseStream, dispatchLocalToolCalls, runChatLoop, callMcpTool, fetchMcpManifest } from "./orchestrator.js"
+import { parseSseStream, dispatchLocalToolCalls, runChatLoop, callMcpTool, fetchMcpManifest,
+         listMcpPrompts, getMcpPrompt, listMcpResources, readMcpResource,
+         promptMessagesToText } from "./orchestrator.js"
 
 // --- fixtures --------------------------------------------------------------
 
@@ -801,4 +803,104 @@ test("runChatLoop: hostWide schemas are merged into local_tools sent to meta-ser
   assert.ok(tool, "hostWideTools[].name should appear in local_tools sent upstream")
   assert.equal(tool.description, "Annotate the current text")
   assert.deepEqual(tool.input_schema.required, [ "text" ])
+})
+
+// --- prompt and resource primitives ---------------------------------------
+//
+// Both are OPTIONAL in MCP, so the widget has to stay usable against a server
+// that implements neither. These cover the shapes the spec defines plus the
+// unsupported case.
+
+const MCP = "https://host.test/mcp"
+
+function jsonRoute(respond) {
+  return [ {
+    matches: (u) => u === MCP,
+    respond: (body) => ({
+      ok: true,
+      headers: { get: () => "application/json" },
+      json: async () => respond(body)
+    })
+  } ]
+}
+
+test("listMcpPrompts returns the server's prompts, tagged with the endpoint", async () => {
+  const { result, calls } = await withFetch(
+    jsonRoute(() => ({ result: { prompts: [ { name: "annotate", arguments: [] } ] } })),
+    () => listMcpPrompts({ endpoint: MCP })
+  )
+  assert.equal(calls[0].body.method, "prompts/list")
+  assert.equal(result[0].name, "annotate")
+  assert.equal(result[0].endpoint, MCP)
+})
+
+test("listMcpPrompts is empty when the server does not support prompts", async () => {
+  const { result } = await withFetch(
+    jsonRoute(() => ({ error: { code: -32601, message: "Method not found: prompts/list" } })),
+    () => listMcpPrompts({ endpoint: MCP })
+  )
+  assert.deepEqual(result, [])
+})
+
+test("listMcpResources is empty when the server does not support resources", async () => {
+  const { result } = await withFetch(
+    jsonRoute(() => ({ error: { code: -32601, message: "Method not found" } })),
+    () => listMcpResources({ endpoint: MCP })
+  )
+  assert.deepEqual(result, [])
+})
+
+test("getMcpPrompt passes the arguments through", async () => {
+  const { calls } = await withFetch(
+    jsonRoute(() => ({ result: { messages: [] } })),
+    () => getMcpPrompt({ endpoint: MCP, name: "annotate", args: { text: "hi", dictionaries: "uberon" } })
+  )
+  assert.equal(calls[0].body.method, "prompts/get")
+  assert.deepEqual(calls[0].body.params, { name: "annotate", arguments: { text: "hi", dictionaries: "uberon" } })
+})
+
+test("getMcpPrompt surfaces a JSON-RPC error instead of returning empty", async () => {
+  await assert.rejects(
+    () => withFetch(
+      jsonRoute(() => ({ error: { code: -32602, message: "Missing required argument(s): dictionaries" } })),
+      () => getMcpPrompt({ endpoint: MCP, name: "annotate", args: {} })
+    ),
+    /Missing required argument/
+  )
+})
+
+test("readMcpResource returns the contents entry", async () => {
+  const { result } = await withFetch(
+    jsonRoute(() => ({ result: { contents: [ { uri: "x://y", mimeType: "application/json", text: '{"a":1}' } ] } })),
+    () => readMcpResource({ endpoint: MCP, uri: "x://y" })
+  )
+  assert.equal(JSON.parse(result.contents[0].text).a, 1)
+})
+
+// The hub's messages take a plain string, while prompts/get returns a
+// structured content object (or an array of blocks).
+test("promptMessagesToText flattens object, array and string content", () => {
+  assert.equal(promptMessagesToText({ messages: [ { role: "user", content: { type: "text", text: "one" } } ] }), "one")
+  assert.equal(promptMessagesToText({ messages: [ { role: "user", content: "bare" } ] }), "bare")
+  assert.equal(
+    promptMessagesToText({ messages: [ { role: "user", content: [ { type: "text", text: "a" }, { type: "text", text: "b" } ] } ] }),
+    "a\nb"
+  )
+})
+
+test("promptMessagesToText drops non-text blocks rather than emitting [object Object]", () => {
+  const text = promptMessagesToText({
+    messages: [ { role: "user", content: [ { type: "image", data: "…" }, { type: "text", text: "caption" } ] } ]
+  })
+  assert.equal(text, "caption")
+})
+
+test("promptMessagesToText joins multiple messages", () => {
+  assert.equal(
+    promptMessagesToText({ messages: [
+      { role: "user", content: { type: "text", text: "first" } },
+      { role: "user", content: { type: "text", text: "second" } }
+    ] }),
+    "first\n\nsecond"
+  )
 })

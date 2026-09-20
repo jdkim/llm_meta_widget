@@ -594,19 +594,20 @@ export async function fetchMcpManifest(manifestUrl) {
 // `result` value (or throws on JSON-RPC error / HTTP failure). Supports
 // both JSON and SSE responses (MCP over HTTP allows either).
 let _mcpReqId = 0
-export async function callMcpTool({ endpoint, name, args, signal }) {
+
+// One JSON-RPC round trip to an MCP endpoint. Extracted from callMcpTool so
+// prompts/* and resources/* reuse the same transport — MCP over HTTP may
+// answer with either JSON or SSE, and duplicating that handling per method
+// is how the two drift apart.
+export async function mcpRpc({ endpoint, method, params, signal, label }) {
+  const what = label || method
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "Accept":       "application/json, text/event-stream"
     },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id:      ++_mcpReqId,
-      method:  "tools/call",
-      params:  { name, arguments: args || {} }
-    }),
+    body: JSON.stringify({ jsonrpc: "2.0", id: ++_mcpReqId, method, params: params || {} }),
     signal,
     // Send session cookies for same-origin MCP endpoints. Cross-origin CORS
     // with credentials requires the server to echo Access-Control-Allow-
@@ -617,16 +618,14 @@ export async function callMcpTool({ endpoint, name, args, signal }) {
   })
   if (!response.ok) {
     const text = await response.text().catch(() => "")
-    throw new Error(`callMcpTool(${name}): HTTP ${response.status}${text ? " — " + text.slice(0, 200) : ""}`)
+    throw new Error(`${what}: HTTP ${response.status}${text ? " — " + text.slice(0, 200) : ""}`)
   }
 
   const contentType = response.headers.get("content-type") || ""
 
   if (contentType.includes("application/json")) {
     const body = await response.json()
-    if (body?.error) {
-      throw new Error(`callMcpTool(${name}): ${body.error.message || "JSON-RPC error"}`)
-    }
+    if (body?.error) throw new Error(`${what}: ${body.error.message || "JSON-RPC error"}`)
     return body?.result
   }
 
@@ -635,15 +634,77 @@ export async function callMcpTool({ endpoint, name, args, signal }) {
     for await (const evt of parseSseStream(response.body, signal)) {
       const payload = evt.data
       if (!payload || typeof payload !== "object") continue
-      if (payload.error) {
-        throw new Error(`callMcpTool(${name}): ${payload.error.message || "JSON-RPC error"}`)
-      }
+      if (payload.error) throw new Error(`${what}: ${payload.error.message || "JSON-RPC error"}`)
       if ("result" in payload) return payload.result
     }
-    throw new Error(`callMcpTool(${name}): SSE stream ended without result`)
+    throw new Error(`${what}: SSE stream ended without result`)
   }
 
-  throw new Error(`callMcpTool(${name}): unexpected content-type ${contentType}`)
+  throw new Error(`${what}: unexpected content-type ${contentType}`)
+}
+
+export async function callMcpTool({ endpoint, name, args, signal }) {
+  return mcpRpc({
+    endpoint, signal, method: "tools/call",
+    params: { name, arguments: args || {} },
+    label: `callMcpTool(${name})`
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Prompt and resource primitives
+// ---------------------------------------------------------------------------
+//
+// Optional in MCP, so every one of these returns empty rather than throwing
+// when a server doesn't implement them: the widget must stay usable against a
+// tools-only server. A server that answers `prompts/list` with -32601 is
+// telling us "not supported"; one that errors some other way is broken, and
+// either way the widget carries on with whatever it did get.
+
+export async function listMcpPrompts({ endpoint, signal }) {
+  try {
+    const result = await mcpRpc({ endpoint, method: "prompts/list", signal })
+    return (result?.prompts || []).map((p) => ({ ...p, endpoint }))
+  } catch { return [] }
+}
+
+export async function getMcpPrompt({ endpoint, name, args, signal }) {
+  return mcpRpc({
+    endpoint, signal, method: "prompts/get",
+    params: { name, arguments: args || {} },
+    label: `getMcpPrompt(${name})`
+  })
+}
+
+export async function listMcpResources({ endpoint, signal }) {
+  try {
+    const result = await mcpRpc({ endpoint, method: "resources/list", signal })
+    return (result?.resources || []).map((r) => ({ ...r, endpoint }))
+  } catch { return [] }
+}
+
+export async function readMcpResource({ endpoint, uri, signal }) {
+  return mcpRpc({
+    endpoint, signal, method: "resources/read",
+    params: { uri }, label: `readMcpResource(${uri})`
+  })
+}
+
+// Flatten a prompts/get result into the plain string the hub's messages take.
+// The spec allows `content` to be an object or an array of content blocks;
+// anything non-text is dropped, which is worth knowing — a prompt carrying an
+// image would silently lose it on this path.
+export function promptMessagesToText(result) {
+  return (result?.messages || [])
+    .map((m) => {
+      const c = m.content
+      if (typeof c === "string") return c
+      if (Array.isArray(c)) return c.filter((b) => b?.type === "text").map((b) => b.text).join("\n")
+      if (c && c.type === "text") return c.text
+      return ""
+    })
+    .filter(Boolean)
+    .join("\n\n")
 }
 
 // Standalone remote dispatcher — POSTs one tool_call to the meta-server's
