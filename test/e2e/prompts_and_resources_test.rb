@@ -69,19 +69,10 @@ begin
     results[:prompts_html]  = d.execute_script("return (document.querySelector('.lmw-prompts')||{}).outerHTML")
   end
 
-  # With the page empty, the template must name the empty field rather than
-  # relaying the server's -32602 for something fixable on screen.
-  if results[:prompt_button].is_a?(Hash)
-    d.execute_script("$('#text').val('');")
-    click_safely(d, ".lmw-prompt")
-    sleep 2
-    msg = d.execute_script("return (document.querySelector('.lmw-messages')||{}).innerText || ''")
-    results[:empty_page_guard] = msg.include?("nothing to use for") ? "PASS — #{msg[/nothing to use for[^\n]*/]}" : "FAIL — #{msg[0, 200]}"
-    click_safely(d, ".lmw-clear")
-  end
-
-  # The template's required arguments come from the page, so give the page
-  # something to work with: a sentence and one really-existing dictionary.
+  # The page state the template will use as hints. (The empty-page path — the
+  # template working with nothing filled in — is covered by
+  # blank_page_start_test.rb, which is where it belongs now that neither
+  # argument is required.)
   first_dic = d.execute_script(<<~JS)
     var el = document.querySelector("#unselected_dictionaries > .dictionary, #selected_dictionaries > .dictionary");
     return el ? el.getAttribute("name") : null;
@@ -122,7 +113,9 @@ begin
     results[:captured_urls] = bodies.map { _1["url"] }
   end
 
-  # 3. The catalog is first-turn-only: a second turn must not pay for it again.
+  # 3. A stable resource stays available: it is read once, but every turn's
+  #    system prompt carries it. Attaching it only to turn 1 left the model
+  #    rediscovering it with tool calls on the turn that actually needed it.
   sleep 20
   before = d.execute_script("return (window.__bodies || []).length")
   input = d.find_element(css: ".lmw-input")
@@ -145,8 +138,7 @@ begin
     results[:second_turn] = "FAIL — second turn never reached the hub"
   end
 
-  # 4. Clear starts a NEW conversation, so a 'once' resource is owed to it
-  #    again. The old latched boolean withheld it silently.
+  # 4. A fresh conversation after Clear still carries it.
   sleep 10
   before_clear = d.execute_script("return (window.__bodies || []).length")
   click_safely(d, ".lmw-clear")
