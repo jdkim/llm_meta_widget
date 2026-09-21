@@ -35,7 +35,11 @@ module LlmMetaWidget
       # anon" (all Ollama models / all public_to_anonymous MCP servers).
       # Pass arrays to curate.
       models:                  nil,   # e.g. ["qwen3-6-35b-fast", "qwen3-6-35b-no-think"]
-      hub_tools:               nil    # e.g. ["togomcp", "pubdictionaries"] — MCP server names
+      hub_tools:               nil,   # e.g. ["togomcp", "pubdictionaries"] — MCP server names
+      # First thing a visitor sees when the panel opens, above the offered
+      # prompt templates. nil → a generic line. A blank panel tells a
+      # first-time visitor nothing about what the assistant can do for them.
+      greeting:                nil
     }.freeze
 
     def llm_meta_widget(base_url:, model:, **overrides)

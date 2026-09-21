@@ -268,6 +268,59 @@
 		border-radius: 8px;
 		padding: 8px;
 	}
+	#llm-meta-widget-chat .message-content details > summary {
+		cursor: pointer;
+		font-weight: 600;
+	}
+	#llm-meta-widget-chat .lmw-sent-text {
+		margin-top: 6px;
+		font-size: 12px;
+		opacity: 0.8;
+		white-space: pre-wrap;
+	}
+
+	/* Opening state: greeting + the offers themselves. Shown until the first
+	 * real turn, and again after Clear. */
+	#llm-meta-widget-chat .lmw-welcome { padding: 4px 2px 2px; }
+	#llm-meta-widget-chat .lmw-welcome-hello {
+		margin: 0 0 12px;
+		font-size: 14px;
+		line-height: 1.5;
+		color: #374151;
+	}
+	#llm-meta-widget-chat .lmw-welcome-card {
+		background-color: #f9fafb;
+		border: 1px solid #e5e7eb;
+		border-radius: 8px;
+		padding: 10px 12px;
+		margin-bottom: 8px;
+	}
+	#llm-meta-widget-chat .lmw-welcome-start {
+		background-color: #eff6ff;
+		color: #1d4ed8;
+		border: 1px solid #bfdbfe;
+		border-radius: 999px;
+		padding: 4px 12px;
+		font-size: 13px;
+		font-family: inherit;
+		cursor: pointer;
+	}
+	#llm-meta-widget-chat .lmw-welcome-start:hover { background-color: #dbeafe; }
+	#llm-meta-widget-chat .lmw-welcome-why {
+		margin: 8px 0 0;
+		font-size: 13px;
+		line-height: 1.45;
+		color: #4b5563;
+	}
+	#llm-meta-widget-chat .lmw-welcome-slots {
+		margin: 8px 0 0;
+		padding-left: 16px;
+		font-size: 12px;
+		color: #6b7280;
+	}
+	#llm-meta-widget-chat .lmw-welcome-slots li { margin-bottom: 2px; }
+	#llm-meta-widget-chat .lmw-welcome-slots li.filled { color: #047857; }
+
 	/* Server-offered prompt templates. The row is display:none in markup and
 	 * gets its display back only when a prompt actually exists, so the inline
 	 * style and this rule have to agree on "flex". */
@@ -398,8 +451,8 @@
 <script type="module">
 	import { runChatLoop, fetchMcpManifest, listMcpPrompts, getMcpPrompt,
 	         listMcpResources, readMcpResource, promptMessagesToText,
-	         loadHostResource, createResourceAttacher, resourceLinesForTurn, resolvePromptArguments,
-	         promptButtonProps } from "<%= orchestrator_path %>";
+	         loadHostResource, resourceLinesForTurn, resolvePromptArguments,
+	         promptButtonProps, promptArgumentSummary } from "<%= orchestrator_path %>";
 	import { marked } from "/llm_meta_widget_assets/marked.esm.js";
 
 	// Standard prose settings — GFM (tables, autolinks, strikethrough),
@@ -411,6 +464,7 @@
 	var API_KEY_UUID           = <%= api_key_uuid.to_json.html_safe %>;
 	var MODEL                  = <%= model.to_json.html_safe %>;
 	var ACTIONS_SCHEMA_ID      = <%= actions_schema_id.to_json.html_safe %>;
+	var GREETING               = <%= greeting.to_json.html_safe %>;
 	var STATE_GLOBAL           = <%= state_global.to_json.html_safe %>;
 	var ACTIONS_GLOBAL         = <%= actions_global.to_json.html_safe %>;
 	var REMOTE_TOOLS_SCHEMA_ID = <%= remote_tools_schema_id.to_json.html_safe %>;
@@ -755,7 +809,6 @@
 	var hostWideTools = [];
 	var hostWidePrompts = [];
 	var resourceContext = null;   // payload of the host's reference resource
-	var resourceAttacher = null;  // per-turn gate, built from the server's hint
 	var resourcePlan = null;      // the pre-flight decision, kept so Clear can re-arm the gate
 
 	// Beyond ~2k tokens a reference resource starts crowding out the
@@ -763,9 +816,6 @@
 	// is 218 dictionaries / ~35KB / ~10k tokens.
 	var RESOURCE_BUDGET_BYTES = 8000;
 
-	// Set when a server declared a resource we deliberately did not attach,
-	// so the reason is inspectable rather than a silent absence.
-	var resourceSkip = null;
 
 	var wellKnownReady = (async function() {
 		var urls = WELL_KNOWN_URLS === null
@@ -799,7 +849,6 @@
 					list:        listMcpResources,
 					read:        readMcpResource,
 					onSkip: function(plan) {
-						resourceSkip = plan;
 						console.info("[llm_meta_widget] not attaching " + plan.uri +
 						             " (" + plan.reason + ", sizeBytes=" + plan.sizeBytes + ")");
 					}
@@ -808,13 +857,13 @@
 				// per turn instead — so the plan, not the payload, is what says
 				// whether this endpoint offered anything worth attaching.
 				if (loaded && loaded.plan && loaded.plan.fetch) {
-					resourceContext  = loaded.context;
-					resourcePlan     = loaded.plan;
-					resourceAttacher = createResourceAttacher(loaded.plan);
+					resourceContext = loaded.context;
+					resourcePlan    = loaded.plan;
 				}
 			}
 		}
 		renderPromptButtons();
+		renderWelcome();
 	})();
 
 	// ---- server-offered prompt templates --------------------------------
@@ -844,6 +893,66 @@
 		promptsEl.style.display = "";
 	}
 
+	// A blank panel tells a first-time visitor nothing. Open with a greeting
+	// and the offers themselves — each template showing what it will take from
+	// the page and what it will ask for — so the assistant is the page's way
+	// in rather than a box you must already know how to talk to.
+	function renderWelcome() {
+		if (!historyEl || historyEl.querySelector(".message")) return;
+		historyEl.textContent = "";
+
+		var box = document.createElement("div");
+		box.className = "lmw-welcome";
+
+		var hello = document.createElement("p");
+		hello.className = "lmw-welcome-hello";
+		hello.textContent = GREETING ||
+			"Hi — I can work this page for you. Tell me what you need in your own words" +
+			(hostWidePrompts.length ? ", or start with one of these:" : ".");
+		box.appendChild(hello);
+
+		var state = window[STATE_GLOBAL] || {};
+		hostWidePrompts.forEach(function(prompt) {
+			var props = promptButtonProps(prompt);
+			var card  = document.createElement("div");
+			card.className = "lmw-welcome-card";
+
+			var start = document.createElement("button");
+			start.type = "button";
+			start.className = "lmw-welcome-start";
+			start.textContent = props.label;
+			start.addEventListener("click", function() { runPromptTemplate(prompt, start); });
+			card.appendChild(start);
+
+			if (prompt.description) {
+				var why = document.createElement("p");
+				why.className = "lmw-welcome-why";
+				why.textContent = prompt.description;
+				card.appendChild(why);
+			}
+
+			// Name the placeholders, filled or not, so the offer is concrete:
+			// a newcomer can see the text box is empty before clicking.
+			var summary = promptArgumentSummary(prompt, state);
+			if (summary.length) {
+				var slots = document.createElement("ul");
+				slots.className = "lmw-welcome-slots";
+				summary.forEach(function(slot) {
+					var li = document.createElement("li");
+					li.className = slot.filled ? "filled" : "empty";
+					li.textContent = slot.filled
+						? slot.name + ": " + (slot.value.length > 60 ? slot.value.slice(0, 60) + "…" : slot.value)
+						: slot.name + ": not set yet — I'll ask, or work it out";
+					slots.appendChild(li);
+				});
+				card.appendChild(slots);
+			}
+			box.appendChild(card);
+		});
+
+		historyEl.appendChild(box);
+	}
+
 	async function runPromptTemplate(prompt, button) {
 		var resolved = resolvePromptArguments(prompt, window[STATE_GLOBAL] || {});
 		var args = resolved.args;
@@ -863,6 +972,7 @@
 			var text = promptMessagesToText(result);
 			if (!text) { appendTurn("error", "The server returned an empty prompt."); return; }
 			inputEl.value = text;
+			pendingTurnLabel = promptButtonProps(prompt).label;
 			if (typeof formEl.requestSubmit === "function") formEl.requestSubmit();
 			else formEl.dispatchEvent(new Event("submit", { cancelable: true }));
 		} catch (e) {
@@ -872,13 +982,22 @@
 		}
 	}
 
-	function appendTurn(role, text) {
+	// Set just before a template submits, so its turn is labelled by what the
+	// user actually did — "Annotate text" — instead of showing a paragraph of
+	// server-written instructions as though they had typed it. The instructions
+	// stay one click away rather than hidden: what was sent is what is shown.
+	var pendingTurnLabel = null;
+
+	function appendTurn(role, text, turnLabel) {
 		// Class names mirror llm_meta_chat's chats/_message.html.erb —
 		// `.message.<role>`, `.message-role`, `.message-content` — so the
 		// shared conversation.css styles apply directly (see the <link>
 		// above). The .lmw-* prefix is reserved for widget-CHROME classes
 		// (header, clear button, scroll region, input area) that aren't
 		// part of the shared conversation surface.
+		var welcome = historyEl.querySelector(".lmw-welcome");
+		if (welcome) welcome.remove();
+
 		var div = document.createElement("div");
 		div.className = "message " + role;
 		var label = document.createElement("div");
@@ -891,12 +1010,25 @@
 		// content is rendered as markdown but only after the assistant's
 		// text is streamed in via renderMarkdownInto — this appendTurn
 		// creates the empty container.
-		body.textContent = text;
+		if (turnLabel) {
+			var details = document.createElement("details");
+			var summary = document.createElement("summary");
+			summary.textContent = turnLabel;
+			var full = document.createElement("div");
+			full.className = "lmw-sent-text";
+			full.textContent = text;
+			details.appendChild(summary);
+			details.appendChild(full);
+			body.appendChild(details);
+		} else {
+			body.textContent = text;
+		}
 		div.appendChild(label);
 		div.appendChild(document.createTextNode(" "));
 		div.appendChild(body);
 		historyEl.appendChild(div);
 		historyEl.scrollTop = historyEl.scrollHeight;
+		body.roleLabel = label;   // so a turn in flight can show it is working
 		return body;
 	}
 
@@ -921,6 +1053,23 @@
 		return role;
 	}
 
+	// While a turn is in flight the assistant's label becomes a turning gear.
+	// Same markup and class names as llm_meta_chat's message_stream_controller,
+	// so the shared conversation.css drives both. Without it there is no sign
+	// whether the assistant is still working or has quietly stopped — and on a
+	// local model a tool round can take a long time before the first token.
+	function markWorking(label) {
+		if (!label || label.classList.contains("is-working")) return;
+		label.innerHTML = '<span class="role-spinner" aria-hidden="true">\u2699\uFE0F</span> Working…';
+		label.classList.add("is-working");
+	}
+
+	function markDone(label) {
+		if (!label || !label.classList.contains("is-working")) return;
+		label.classList.remove("is-working");
+		label.textContent = roleLabel("assistant");
+	}
+
 	var currentThinkingBlock = null;
 	var currentThinkingBody  = null;
 
@@ -931,8 +1080,17 @@
 		var details = document.createElement("details");
 		details.className = "message-thinking";
 		details.open = true;
+		details.classList.add("thinking-active");
 		var summary = document.createElement("summary");
 		summary.textContent = "🤔 thinking…";
+		var dots = document.createElement("span");
+		dots.className = "thinking-dots";
+		for (var i = 0; i < 3; i++) {
+			var dot = document.createElement("span");
+			dot.textContent = ".";
+			dots.appendChild(dot);
+		}
+		summary.appendChild(dots);
 		var body = document.createElement("div");
 		body.className = "message-thinking-content";
 		details.appendChild(summary);
@@ -946,6 +1104,7 @@
 
 	function collapseThinkingBlock() {
 		if (currentThinkingBlock) {
+			currentThinkingBlock.classList.remove("thinking-active");
 			currentThinkingBlock.open = false;
 			var summary = currentThinkingBlock.querySelector("summary");
 			if (summary) summary.textContent = "🤔 thinking (finished)";
@@ -970,25 +1129,21 @@
 			"RULES for tool use:",
 			"1. If the user's question can be answered from the Current page state below, answer directly with a plain-text response — do NOT invoke a tool.",
 			"2. If the user requests a state change, or needs information not in the page state, invoke the matching tool via a function call. Do not describe your intent in text without actually invoking (a textual promise like \"I will add X\" is a failure).",
-			"3. After a tool returns a result, YOUR NEXT MESSAGE MUST BE A PLAIN-TEXT ANSWER using that result. DO NOT emit another tool call.",
-			"4. NEVER call the SAME tool twice in a row with the same or similar arguments — its earlier result is already in the conversation history.",
+			"3. After a tool returns a result, use it: either take the next step the task needs, or — if the task is done — answer in plain text. Do not stop silently after a tool call.",
+			"4. NEVER repeat a call you have already made with the same or similar arguments — its result is already in the conversation history.",
 			"",
 			"Current page state:",
 			JSON.stringify(currentPageState(), null, 2)
 		].concat(resourceLines || []).join("\n");
 	}
 
-	// Whether to attach, and how often, is the SERVER's call — via the
-	// extension's autoAttach and volatility fields, which default to
-	// attach-once for a server that declares neither.
-	//
-	// Asking consumes the turn, and a volatile resource is re-read here rather
-	// than re-using the boot-time copy — so this runs once per send, before
-	// the system prompt is built.
+	// Runs once per send, before the system prompt is built: a volatile
+	// resource is re-read here, a stable one re-uses the copy taken at boot.
+	// Either way it is attached to every turn — the server's hint governs
+	// re-FETCHING; how often to include it is this client's call.
 	async function resourceLinesForThisTurn() {
 		var turn = await resourceLinesForTurn({
 			plan:        resourcePlan,
-			attacher:    resourceAttacher,
 			cached:      resourceContext,
 			endpoint:    resourcePlan && resourcePlan.endpoint,
 			read:        readMcpResource,
@@ -1006,9 +1161,7 @@
 		if (currentAbort) { try { currentAbort.abort(); } catch (e) { /* noop */ } }
 		conversation = [];
 		historyEl.innerHTML = "";
-		// Clear starts a new conversation, so a 'once' resource is owed to it
-		// again — the old boolean stayed latched and silently withheld it.
-		if (resourcePlan) resourceAttacher = createResourceAttacher(resourcePlan);
+		renderWelcome();
 	});
 
 	// Enter submits, Shift+Enter inserts a newline — matches llm_meta_chat's
@@ -1022,17 +1175,19 @@
 		}
 	});
 
-	formEl.addEventListener("submit", async function(e) {
-		e.preventDefault();
+	formEl.addEventListener("submit", async function(event) {
+		event.preventDefault();
 		var userText = inputEl.value.trim();
 		if (!userText) return;
 		inputEl.value = "";
-		appendTurn("user", userText);
+		appendTurn("user", userText, pendingTurnLabel);
+		pendingTurnLabel = null;
 
 		if (currentAbort) { try { currentAbort.abort(); } catch (e) { /* noop */ } }
 		currentAbort = new AbortController();
 
 		var assistantBody = appendTurn("assistant", "");
+		markWorking(assistantBody.roleLabel);
 		var assistantMarkdown = "";  // accumulate raw markdown, re-render on each delta
 
 		try {
@@ -1058,7 +1213,16 @@
 				aiActions:     window[ACTIONS_GLOBAL] || {},
 				maxRounds:     MAX_ROUNDS,
 				signal:        currentAbort.signal,
+				onPhase: function(name) {
+					// 'thinking' covers the long silence before the first
+					// token; 'responding' means text is on its way.
+					if (name === "responding") markDone(assistantBody.roleLabel);
+					else markWorking(assistantBody.roleLabel);
+				},
 				onRoundStart: function(roundIdx) {
+					// A new round means more work: tool results are going back
+					// to the model, which is the longest wait of all.
+					markWorking(assistantBody.roleLabel);
 					// Loop mechanics are debugging info, not user-facing signal.
 					// Reuse the same assistant bubble across rounds — text just
 					// keeps streaming into it (accumulating markdown). Weaker
@@ -1075,6 +1239,7 @@
 					historyEl.scrollTop = historyEl.scrollHeight;
 				},
 				onTextDelta: function(delta) {
+					markDone(assistantBody.roleLabel);
 					collapseThinkingBlock();
 					assistantMarkdown += delta;
 					renderMarkdownInto(assistantBody, assistantMarkdown);
@@ -1125,6 +1290,12 @@
 				appendTurn("error", err.message);
 			}
 		} finally {
+			// Whatever happened — answered, aborted, threw, or returned
+			// nothing at all — the turn is over and the label must stop
+			// claiming otherwise. A spinner left running is a worse lie than
+			// no spinner: it says "still working" about a turn that ended.
+			markDone(assistantBody.roleLabel);
+			collapseThinkingBlock();
 			currentAbort = null;
 		}
 	});
