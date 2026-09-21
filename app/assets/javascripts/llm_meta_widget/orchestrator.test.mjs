@@ -11,9 +11,10 @@ import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import assert from "node:assert/strict"
 
-import { resourceHints, planResourceAttachment, createResourceAttacher, trimResourceText,
-         loadHostResource, resourceLinesForTurn, resourceContextLines,
+import { resourceHints, planResourceAttachment, trimResourceText,
+         loadHostResource, resourceLinesForTurn,
          promptArgFromState, resolvePromptArguments, promptButtonProps,
+         promptArgumentSummary,
          STATIC_PRIMITIVES_META,
          parseSseStream, dispatchLocalToolCalls, runChatLoop, callMcpTool, fetchMcpManifest,
          listMcpPrompts, getMcpPrompt, listMcpResources, readMcpResource,
@@ -358,23 +359,50 @@ test("runChatLoop: zero tool_calls → single round, returns immediately", async
   assert.equal(calls.length, 1)  // exactly one LLM call, no MCP proxy
 })
 
-test("runChatLoop: only local tool_calls → dispatch, no loop (locals never round-trip)", async () => {
+test("runChatLoop: a page action's outcome feeds back, so the task can continue", async () => {
+  // Page actions used to be fire-and-forget, which ended the loop after a
+  // write. A task like "select these dictionaries, then annotate" was cut off
+  // the moment it touched the page.
   const aiActionCalls = []
   const aiActions = { add_dictionaries: (args) => { aiActionCalls.push(args) } }
+  let round = 0
 
   const { result, calls } = await withFetch(
     [ { matches: (u) => u.includes("/single_llm_calls"),
-        respond: () => sseResponse(
-          sseWithToolCalls([ { id: "c1", name: "add_dictionaries", arguments: { names: [ "uberon" ] } } ])
-        ) } ],
+        respond: () => {
+          round++
+          return round === 1
+            ? sseResponse(sseWithToolCalls([ { id: "c1", name: "add_dictionaries", arguments: { names: [ "uberon" ] } } ]))
+            : sseResponse(sseDoneOnly("Selected uberon; annotating now."))
+        } } ],
     (mock) => runChatLoop({ ...BASE_OPTS, aiActions })
   )
-  assert.equal(result.rounds.length, 1)
   assert.deepEqual(aiActionCalls, [ { names: [ "uberon" ] } ])
-  assert.equal(result.dispatched.length, 1)
-  assert.equal(result.dispatched[0].toolCall.name, "add_dictionaries")
-  // Fire-and-forget: one LLM call, no follow-up.
-  assert.equal(calls.filter((c) => c.url.includes("single_llm_calls")).length, 1)
+  assert.equal(result.rounds.length, 2, "the write must not end the conversation")
+  assert.equal(calls.filter((c) => c.url.includes("single_llm_calls")).length, 2)
+  assert.match(result.content, /annotating/)
+})
+
+test("runChatLoop: a failing page action is reported back to the model", async () => {
+  // The model can correct itself only if it learns the write failed; before,
+  // the failure was a red mark in the UI that the model never saw.
+  const aiActions = { add_dictionaries: () => { throw new Error("unknown dictionary: nope") } }
+  let round = 0
+
+  const { result, calls } = await withFetch(
+    [ { matches: (u) => u.includes("/single_llm_calls"),
+        respond: () => {
+          round++
+          return round === 1
+            ? sseResponse(sseWithToolCalls([ { id: "c1", name: "add_dictionaries", arguments: { names: [ "nope" ] } } ]))
+            : sseResponse(sseDoneOnly("Sorry — there is no dictionary called nope."))
+        } } ],
+    (mock) => runChatLoop({ ...BASE_OPTS, aiActions })
+  )
+  const secondBody = calls.filter((c) => c.url.includes("single_llm_calls"))[1].body
+  const toolMessage = secondBody.messages.find((m) => m.role === "tool")
+  assert.match(toolMessage.content, /unknown dictionary: nope/)
+  assert.match(result.content, /no dictionary called nope/)
 })
 
 test("runChatLoop: only remote tool_calls → POST to /mcp_tools/:id/call, feed result back, second round terminates", async () => {
@@ -415,7 +443,7 @@ test("runChatLoop: only remote tool_calls → POST to /mcp_tools/:id/call, feed 
   assert.equal(secondReq.messages[2].name, "text_annotation")
 })
 
-test("runChatLoop: mixed local + remote → both dispatched, only remote triggers follow-up round", async () => {
+test("runChatLoop: mixed local + remote → both dispatched, both results fed back", async () => {
   const remoteTools = [ { id: 99, name: "search_pubmed" } ]
   const aiActions = { set_semantic_threshold: () => "ok" }
   let round = 0
@@ -439,13 +467,13 @@ test("runChatLoop: mixed local + remote → both dispatched, only remote trigger
   )
   assert.equal(result.rounds.length, 2)
   assert.equal(result.dispatched.length, 2)
-  // The follow-up messages include BOTH local + remote tool_calls in the
-  // assistant turn (server sees full record); only the remote gets a tool
-  // result (locals are fire-and-forget).
+  // The follow-up carries both tool_calls in the assistant turn and a result
+  // for each: the page action reports that it applied, the remote tool its
+  // value. Dropping the page action's result used to end the conversation.
   const secondReq = calls.filter((c) => c.url.includes("single_llm_calls"))[1].body
   assert.equal(secondReq.messages[1].tool_calls.length, 2)
-  assert.equal(secondReq.messages.filter((m) => m.role === "tool").length, 1)
-  assert.equal(secondReq.messages[2].name, "search_pubmed")
+  const toolMessages = secondReq.messages.filter((m) => m.role === "tool")
+  assert.deepEqual(toolMessages.map((m) => m.name).sort(), [ "search_pubmed", "set_semantic_threshold" ])
 })
 
 test("runChatLoop: unknown tool name → goes to skipped, doesn't loop, doesn't POST anywhere", async () => {
@@ -744,20 +772,24 @@ test("runChatLoop: aiActions (Class 3) wins over hostWide (Class 2) when tool na
     description: "", input_schema: { type: "object" }
   } ]
 
-  const { result, calls } = await withFetch(
+  let round = 0
+  const { calls } = await withFetch(
     [
       { matches: (u) => u.includes("/single_llm_calls"),
-        respond: () => sseResponse(sseWithToolCalls(
-          [ { id: "c1", name: "snap", arguments: { x: 1 } } ]
-        )) },
+        respond: () => {
+          round++
+          return round === 1
+            ? sseResponse(sseWithToolCalls([ { id: "c1", name: "snap", arguments: { x: 1 } } ]))
+            : sseResponse(sseDoneOnly("done"))
+        } },
       { matches: (u) => u === "https://host.test/mcp",
         respond: () => jsonResponse({ jsonrpc: "2.0", id: 1, result: "SHOULD NOT BE CALLED" }) }
     ],
     (mock) => runChatLoop({ ...BASE_OPTS, aiActions, hostWideTools })
   )
-  assert.equal(result.rounds.length, 1, "Class 3 doesn't loop — no round-trip result")
   assert.deepEqual(aiActionCalls, [ { x: 1 } ])
-  assert.equal(calls.filter((c) => c.url === "https://host.test/mcp").length, 0)
+  assert.equal(calls.filter((c) => c.url === "https://host.test/mcp").length, 0,
+               "the host endpoint must not be hit when a page action owns the name")
 })
 
 test("runChatLoop: hostWide (Class 2) wins over remote (Class 1) when tool names collide", async () => {
@@ -976,23 +1008,8 @@ test("planResourceAttachment honours autoAttach false regardless of size", () =>
   assert.equal(plan.reason, "not-auto-attach")
 })
 
-test("createResourceAttacher attaches a stable resource on the first turn only", () => {
-  const attacher = createResourceAttacher(planResourceAttachment(withMeta({ sizeBytes: 10 }), 8000))
-  assert.equal(attacher.take(), true)
-  assert.equal(attacher.take(), false)
-})
 
-test("createResourceAttacher attaches a volatile resource every turn", () => {
-  const attacher = createResourceAttacher(planResourceAttachment(withMeta({ sizeBytes: 10, volatility: "volatile" }), 8000))
-  assert.equal(attacher.take(), true)
-  assert.equal(attacher.take(), true)
-})
 
-test("createResourceAttacher never attaches when autoAttach is false", () => {
-  const attacher = createResourceAttacher(planResourceAttachment(withMeta({ autoAttach: false }), 8000))
-  assert.equal(attacher.take(), false)
-  assert.equal(attacher.take(), false)
-})
 
 test("trimResourceText reduces an oversized catalog to its names", () => {
   const big = JSON.stringify({ dictionaries: [ { name: "uberon", description: "x".repeat(200) },
@@ -1107,14 +1124,13 @@ async function turns(count, fields, readImpl) {
   const entry = withMeta(fields)
   const plan = planResourceAttachment(entry, 8000)
   plan.name = entry.name
-  const attacher = createResourceAttacher(plan)
   let cached = plan.fetch && plan.volatility !== "volatile"
     ? { uri: entry.uri, name: entry.name, text: CATALOG }
     : null
   const out = []
   for (let i = 0; i < count; i++) {
     const turn = await resourceLinesForTurn({
-      plan, attacher, cached, endpoint: "/mcp", read: readImpl, budgetBytes: 8000
+      plan, cached, endpoint: "/mcp", read: readImpl, budgetBytes: 8000
     })
     cached = turn.cached
     out.push(turn.lines)
@@ -1122,11 +1138,14 @@ async function turns(count, fields, readImpl) {
   return out
 }
 
-test("a stable resource is attached on turn 1 and never re-read", async () => {
+test("a stable resource stays in every turn's prompt, and is never re-read", async () => {
+  // Attaching it only once put the reference data in the one turn that could
+  // not use it; the model then spent tool calls rediscovering it.
   let reads = 0
-  const [ first, second ] = await turns(2, { sizeBytes: 10 }, async () => { reads++; return payloadOf(CATALOG) })
+  const [ first, second, third ] = await turns(3, { sizeBytes: 10 }, async () => { reads++; return payloadOf(CATALOG) })
   assert.equal(first.length, 3)
-  assert.deepEqual(second, [])
+  assert.equal(second.length, 3)
+  assert.equal(third.length, 3)
   assert.equal(reads, 0, "the boot-time copy is re-used, not fetched again")
 })
 
@@ -1142,18 +1161,17 @@ test("a volatile resource is re-fetched and re-attached every turn", async () =>
   assert.ok(second[2].includes("reading-2"), "turn 2 must carry the fresh copy, not the first one")
 })
 
-test("a resource with both fields absent attaches once, as v0.2.0 did", async () => {
+test("a resource with both fields absent behaves as a stable auto-attached one", async () => {
   const entry = { uri: "x://y", name: "catalog", mimeType: "application/json" }
   const plan = planResourceAttachment(entry, 8000)
   plan.name = entry.name
-  const attacher = createResourceAttacher(plan)
   const cached = { uri: entry.uri, name: entry.name, text: CATALOG }
   const read = async () => { throw new Error("must not re-read a stable resource") }
 
-  const t1 = await resourceLinesForTurn({ plan, attacher, cached, endpoint: "/mcp", read, budgetBytes: 8000 })
-  const t2 = await resourceLinesForTurn({ plan, attacher, cached: t1.cached, endpoint: "/mcp", read, budgetBytes: 8000 })
+  const t1 = await resourceLinesForTurn({ plan, cached, endpoint: "/mcp", read, budgetBytes: 8000 })
+  const t2 = await resourceLinesForTurn({ plan, cached: t1.cached, endpoint: "/mcp", read, budgetBytes: 8000 })
   assert.equal(t1.lines.length, 3)
-  assert.deepEqual(t2.lines, [])
+  assert.equal(t2.lines.length, 3)
 })
 
 test("an autoAttach-false resource is never attached, on any turn", async () => {
@@ -1176,9 +1194,8 @@ test("a volatile re-read is trimmed against the budget too", async () => {
   const entry = withMeta({ sizeBytes: 10, volatility: "volatile" })
   const plan = planResourceAttachment(entry, 500)
   plan.name = entry.name
-  const attacher = createResourceAttacher(plan)
   const turn = await resourceLinesForTurn({
-    plan, attacher, cached: null, endpoint: "/mcp",
+    plan, cached: null, endpoint: "/mcp",
     read: async () => payloadOf(big), budgetBytes: 500
   })
   assert.ok(turn.lines[2].includes("names only"))
@@ -1265,4 +1282,16 @@ test("every name the panel imports is exported by the orchestrator", () => {
   assert.ok(imported.length > 0)
   const missing = imported.filter((n) => !exported.has(n))
   assert.deepEqual(missing, [], `panel imports names the module does not export: ${missing.join(", ")}`)
+})
+
+test("promptArgumentSummary shows which slots the page can already fill", () => {
+  const prompt = { arguments: [ { name: "text", required: false }, { name: "dictionaries", required: false } ] }
+  const summary = promptArgumentSummary(prompt, { text: () => "The stomach was examined." })
+
+  assert.deepEqual(summary.map((s) => [ s.name, s.filled ]), [ [ "text", true ], [ "dictionaries", false ] ])
+  assert.equal(summary[0].value, "The stomach was examined.")
+})
+
+test("promptArgumentSummary handles a prompt with no arguments", () => {
+  assert.deepEqual(promptArgumentSummary({ name: "x" }, {}), [])
 })

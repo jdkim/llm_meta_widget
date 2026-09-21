@@ -446,8 +446,22 @@ export async function runChatLoop(opts) {
     const localOut = await dispatchLocalToolCalls(localCalls, aiActions)
     allDispatched.push(...localOut.dispatched)
 
-    // Class 2: host-wide — direct MCP JSON-RPC POST to the host's own endpoint
+    // A page action's outcome goes back to the model like any other tool
+    // result. It used to be dropped, on the grounds that a write to the page
+    // has nothing to report — but a turn whose only calls were page actions
+    // then ended the loop, so any task that writes to the page and THEN needs
+    // a tool ("select these dictionaries, now annotate") was cut off after
+    // the write. It also means a failed action is something the model can
+    // see and correct, instead of a red mark only the user notices.
     const roundTripResults = []
+    for (const { toolCall, error } of localOut.dispatched) {
+      roundTripResults.push({
+        tc: toolCall,
+        result: error ? { error: String(error.message || error) } : { ok: true, applied: toolCall.name }
+      })
+    }
+
+    // Class 2: host-wide — direct MCP JSON-RPC POST to the host's own endpoint
     for (const tc of hostWideCalls) {
       const tool = hostWideByName[tc.name]
       const args = coerceArguments(tc.arguments)
@@ -490,9 +504,10 @@ export async function runChatLoop(opts) {
       toolCalls: turnResult.toolCalls
     })
 
-    // Terminate when there's nothing to feed back. Locals (Class 3) are
-    // fire-and-forget; unknowns can't be handled; only Class 2 + Class 1
-    // execution produces tool results the LLM should see.
+    // Terminate when there's nothing to feed back: a turn with no tool calls
+    // at all, or one whose only calls were unknown. Anything that executed —
+    // page action, host tool or proxied tool — produces a result the model
+    // sees, and gets another round to act on.
     if (roundTripResults.length === 0) {
       return {
         content: turnResult.content,
@@ -836,22 +851,6 @@ export function planResourceAttachment(entry, budgetBytes) {
   }
 }
 
-// Per-turn gate. A stable resource is attached once and re-used; a volatile
-// one is owed a fresh copy every turn.
-export function createResourceAttacher(plan) {
-  let attachedOnce = false
-  return {
-    take() {
-      if (!plan || !plan.autoAttach) return false
-      if (plan.volatility === "volatile") return true
-      if (attachedOnce) return false
-      attachedOnce = true
-      return true
-    },
-    get volatility() { return plan ? plan.volatility : null }
-  }
-}
-
 // Safety net for a server that declares no size: shrink an oversized
 // catalog to its names rather than dropping it, and hard-truncate anything
 // that is not a recognised catalog shape.
@@ -917,13 +916,21 @@ export function resourceContextLines(context) {
   return [ "", "Reference data — " + context.name + " (" + context.uri + "):", context.text ]
 }
 
-// What to attach on THIS turn. Asking consumes the turn, so the decision and
-// the fetch live together: a stable resource re-uses the copy read at boot,
-// a volatile one is read again right now.
-export async function resourceLinesForTurn({ plan, attacher, cached, endpoint, read, budgetBytes }) {
-  if (!attacher || !attacher.take()) return { lines: [], cached }
+// What to attach on THIS turn.
+//
+// `volatility` governs RE-FETCHING, not re-inclusion: a stable resource is
+// read once and then re-used, but it stays in every turn's system prompt for
+// as long as the conversation lasts. Showing it only on the first turn put
+// the reference data in the one turn that could not use it — the model then
+// spent several tool calls rediscovering what it had already been given,
+// which costs more tokens than simply keeping it.
+//
+// Whether a resource is affordable at all is decided once, from sizeBytes,
+// before it is ever fetched.
+export async function resourceLinesForTurn({ plan, cached, endpoint, read, budgetBytes }) {
+  if (!plan || !plan.autoAttach) return { lines: [], cached }
 
-  if (plan && plan.volatility === "volatile") {
+  if (plan.volatility === "volatile") {
     const fresh = await readResourceContext({
       endpoint, uri: plan.uri, name: plan.name, read, budgetBytes
     })
@@ -969,6 +976,16 @@ export function resolvePromptArguments(prompt, state) {
     else if (arg.required) missing.push(arg.name)
   }
   return { args, missing }
+}
+
+// What a template will take from the page, and what it will have to ask for.
+// Shown to a first-time visitor so the offer is concrete rather than a bare
+// verb: they can see that the text box is empty before they click.
+export function promptArgumentSummary(prompt, state) {
+  return ((prompt && prompt.arguments) || []).map((arg) => {
+    const value = promptArgFromState(arg.name, state)
+    return { name: arg.name, value, filled: value.length > 0, required: !!arg.required }
+  })
 }
 
 export function promptButtonProps(prompt) {
