@@ -1,0 +1,14 @@
+{
+  "name": "llm_meta_widget",
+  "private": true,
+  "description": "Lint and test tooling for the widget's JavaScript. The gem itself ships no npm package.",
+  "type": "module",
+  "scripts": {
+    "lint": "node script/extract_panel_script.mjs && eslint .",
+    "test": "node --test app/assets/javascripts/llm_meta_widget/orchestrator.test.mjs"
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0",
+    "globals": "^15.0.0"
+  }
+}
