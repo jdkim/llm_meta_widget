@@ -122,6 +122,23 @@ begin
     results[:reported_result] = "FAIL — annotated, then said nothing about it"
   end
   results[:ran_out_of_rounds] = msgs.().include?("tool-use limit")
+
+  # Reasoning belongs above the answer it was reasoning towards, inside the
+  # same bubble — as llm_meta_chat places it. Appended to the transcript
+  # instead, it landed after the response.
+  results[:thinking_position] = d.execute_script(<<~JS)
+    var blocks = Array.from(document.querySelectorAll(".message.assistant"));
+    for (var i = 0; i < blocks.length; i++) {
+      var think = blocks[i].querySelector(".message-thinking");
+      var content = blocks[i].querySelector(".message-content");
+      if (think && content) {
+        return (think.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING)
+          ? "above the answer" : "BELOW the answer";
+      }
+    }
+    return "no reasoning block in this run";
+  JS
+  results[:thinking_blocks_seen] = d.execute_script("return document.querySelectorAll('.message-thinking').length")
   results[:transcript_tail] = msgs.()[-800..] || msgs.()
   d.save_screenshot(File.join(OUT, "blank_page_start.png"))
   results[:console_errors] = (d.logs.get(:browser) rescue []).select { _1.level == "SEVERE" }.map(&:message)

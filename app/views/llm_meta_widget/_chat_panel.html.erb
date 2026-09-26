@@ -1072,6 +1072,10 @@
 
 	var currentThinkingBlock = null;
 	var currentThinkingBody  = null;
+	// The assistant bubble of the turn in flight. Reasoning belongs ABOVE that
+	// bubble's content, the way llm_meta_chat places it — appending it to the
+	// transcript instead left it below the answer it was reasoning towards.
+	var activeAssistantBody  = null;
 
 	function ensureThinkingBlock() {
 		if (currentThinkingBody) return currentThinkingBody;
@@ -1095,7 +1099,11 @@
 		body.className = "message-thinking-content";
 		details.appendChild(summary);
 		details.appendChild(body);
-		historyEl.appendChild(details);
+		if (activeAssistantBody && activeAssistantBody.parentNode) {
+			activeAssistantBody.parentNode.insertBefore(details, activeAssistantBody);
+		} else {
+			historyEl.appendChild(details);
+		}
 		historyEl.scrollTop = historyEl.scrollHeight;
 		currentThinkingBlock = details;
 		currentThinkingBody  = body;
@@ -1187,6 +1195,7 @@
 		currentAbort = new AbortController();
 
 		var assistantBody = appendTurn("assistant", "");
+		activeAssistantBody = assistantBody;
 		markWorking(assistantBody.roleLabel);
 		var assistantMarkdown = "";  // accumulate raw markdown, re-render on each delta
 
@@ -1296,6 +1305,7 @@
 			// no spinner: it says "still working" about a turn that ended.
 			markDone(assistantBody.roleLabel);
 			collapseThinkingBlock();
+			activeAssistantBody = null;
 			currentAbort = null;
 		}
 	});
