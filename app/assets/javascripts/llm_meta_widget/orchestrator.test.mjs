@@ -1295,3 +1295,60 @@ test("promptArgumentSummary shows which slots the page can already fill", () => 
 test("promptArgumentSummary handles a prompt with no arguments", () => {
   assert.deepEqual(promptArgumentSummary({ name: "x" }, {}), [])
 })
+
+test("runChatLoop reports each tool as it finishes, not only at the end", async () => {
+  // The returned `dispatched` array says the same thing, but only once the
+  // whole loop ends — minutes later on a slow model, with the user watching
+  // unnamed tools run.
+  const remoteTools = [ { id: 7, name: "search_pubmed" } ]
+  const aiActions = { set_text: () => "ok" }
+  const seen = []
+  let round = 0
+
+  await withFetch(
+    [
+      { matches: (u) => u.includes("/single_llm_calls"),
+        respond: () => {
+          round++
+          return round === 1
+            ? sseResponse(sseWithToolCalls([
+                { id: "c1", name: "set_text", arguments: { text: "hi" } },
+                { id: "c2", name: "search_pubmed", arguments: { q: "fever" } }
+              ]))
+            : sseResponse(sseDoneOnly("done"))
+        } },
+      { matches: (u) => u.includes("/mcp_tools/7/call"),
+        respond: () => jsonResponse({ result: "2 papers" }) }
+    ],
+    () => runChatLoop({
+      ...BASE_OPTS, aiActions, remoteTools,
+      onToolDispatched: ({ toolCall, value, error }) => seen.push([ toolCall.name, error ? "error" : "ok", value ])
+    })
+  )
+
+  assert.deepEqual(seen.map((s) => s[0]).sort(), [ "search_pubmed", "set_text" ])
+  assert.ok(seen.every((s) => s[1] === "ok"))
+})
+
+test("runChatLoop reports a failed tool through the same callback", async () => {
+  const aiActions = { set_text: () => { throw new Error("no such field") } }
+  const seen = []
+  let round = 0
+
+  await withFetch(
+    [ { matches: (u) => u.includes("/single_llm_calls"),
+        respond: () => {
+          round++
+          return round === 1
+            ? sseResponse(sseWithToolCalls([ { id: "c1", name: "set_text", arguments: {} } ]))
+            : sseResponse(sseDoneOnly("sorry"))
+        } } ],
+    () => runChatLoop({
+      ...BASE_OPTS, aiActions,
+      onToolDispatched: (outcome) => seen.push(outcome)
+    })
+  )
+
+  assert.equal(seen.length, 1)
+  assert.match(String(seen[0].error), /no such field/)
+})

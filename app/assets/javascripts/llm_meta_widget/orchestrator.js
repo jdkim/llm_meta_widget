@@ -32,6 +32,7 @@
 //     onTextDelta:     (str)  => {},
 //     onThinkingDelta: (str)  => {},
 //     onToolCall:      (tc)   => {},         // { id, name, arguments }
+//     onToolDispatched: ({toolCall, value, error}) => {},  // after it ran
 //     onPhase:         (name) => {},         // 'thinking' | 'tool_execution' | ...
 //     signal:          abortController.signal
 //   })
@@ -329,6 +330,11 @@ export async function runChatLoop(opts) {
     onTextDelta,
     onThinkingDelta,
     onToolCall,
+    // Fired as each tool finishes, so a caller can show what ran WHILE the
+    // turn is still going. The returned `dispatched` array says the same
+    // thing, but only once the whole loop ends — which on a slow model is
+    // minutes after the work happened, with the user watching unnamed tools.
+    onToolDispatched,
     onPhase,
     ...singleOpts
   } = opts
@@ -454,7 +460,8 @@ export async function runChatLoop(opts) {
     // the write. It also means a failed action is something the model can
     // see and correct, instead of a red mark only the user notices.
     const roundTripResults = []
-    for (const { toolCall, error } of localOut.dispatched) {
+    for (const { toolCall, value, error } of localOut.dispatched) {
+      onToolDispatched?.({ toolCall, value, error })
       roundTripResults.push({
         tc: toolCall,
         result: error ? { error: String(error.message || error) } : { ok: true, applied: toolCall.name }
@@ -468,9 +475,11 @@ export async function runChatLoop(opts) {
       try {
         const value = await callMcpTool({ endpoint: tool.endpoint, name: tc.name, args, signal })
         allDispatched.push({ toolCall: tc, value })
+        onToolDispatched?.({ toolCall: tc, value })
         roundTripResults.push({ tc, result: value })
       } catch (error) {
         allDispatched.push({ toolCall: tc, error })
+        onToolDispatched?.({ toolCall: tc, error })
         roundTripResults.push({ tc, result: { error: String(error.message || error) } })
       }
     }
@@ -488,9 +497,11 @@ export async function runChatLoop(opts) {
           signal
         })
         allDispatched.push({ toolCall: tc, value })
+        onToolDispatched?.({ toolCall: tc, value })
         roundTripResults.push({ tc, result: value })
       } catch (error) {
         allDispatched.push({ toolCall: tc, error })
+        onToolDispatched?.({ toolCall: tc, error })
         // Feed the error text back to the LLM as the tool result — better
         // than dropping it (the LLM can react, apologize, retry differently).
         roundTripResults.push({ tc, result: { error: String(error.message || error) } })

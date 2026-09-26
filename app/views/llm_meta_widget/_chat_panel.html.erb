@@ -1070,6 +1070,48 @@
 		label.textContent = roleLabel("assistant");
 	}
 
+	// Tool chips, written as the tools run rather than assembled at the end.
+	// The end-of-turn footer was invisible for as long as the turn lasted —
+	// minutes on a thinking model — so a visitor watched tools execute with
+	// no idea which ones.
+	var liveChips = null;      // the container inside the current bubble
+	var pendingChips = [];     // chips awaiting their outcome, oldest first
+
+	function chipRow() {
+		if (liveChips && liveChips.parentNode) return liveChips;
+		if (!activeAssistantBody || !activeAssistantBody.parentNode) return null;
+		liveChips = document.createElement("div");
+		liveChips.className = "lmw-tool-chips";
+		// Inside the bubble but OUTSIDE .message-content: every text delta
+		// re-renders that element's markdown from scratch, which silently
+		// erased any chip already written into it.
+		activeAssistantBody.parentNode.appendChild(liveChips);
+		return liveChips;
+	}
+
+	function announceToolCall(toolCall) {
+		var row = chipRow();
+		if (!row) return;
+		var chip = document.createElement("span");
+		chip.className = "lmw-tool-chip running";
+		chip.textContent = "⏳ " + toolCall.name;
+		chip.dataset.tool = toolCall.name;
+		row.appendChild(chip);
+		pendingChips.push(chip);
+		historyEl.scrollTop = historyEl.scrollHeight;
+	}
+
+	function resolveToolCall(outcome) {
+		// Match by name, oldest first: ids are not always echoed back, and a
+		// repeated name resolves in call order.
+		var idx = pendingChips.findIndex(function(c) { return c.dataset.tool === outcome.toolCall.name; });
+		var chip = idx === -1 ? null : pendingChips.splice(idx, 1)[0];
+		if (!chip) return;
+		chip.className = "lmw-tool-chip" + (outcome.error ? " error" : "");
+		chip.textContent = (outcome.error ? "❌ " : "🔧 ") + outcome.toolCall.name;
+		if (outcome.error) chip.title = outcome.error.message || String(outcome.error);
+	}
+
 	var currentThinkingBlock = null;
 	var currentThinkingBody  = null;
 	// The assistant bubble of the turn in flight. Reasoning belongs ABOVE that
@@ -1196,6 +1238,8 @@
 
 		var assistantBody = appendTurn("assistant", "");
 		activeAssistantBody = assistantBody;
+		liveChips = null;
+		pendingChips = [];
 		markWorking(assistantBody.roleLabel);
 		var assistantMarkdown = "";  // accumulate raw markdown, re-render on each delta
 
@@ -1222,6 +1266,8 @@
 				aiActions:     window[ACTIONS_GLOBAL] || {},
 				maxRounds:     MAX_ROUNDS,
 				signal:        currentAbort.signal,
+				onToolCall: function(toolCall) { announceToolCall(toolCall); },
+				onToolDispatched: function(outcome) { resolveToolCall(outcome); },
 				onPhase: function(name) {
 					// 'thinking' covers the long silence before the first
 					// token; 'responding' means text is on its way.
@@ -1258,23 +1304,15 @@
 			conversation.push({ role: "user",      content: userText });
 			conversation.push({ role: "assistant", content: result.content });
 
-			// Append a compact "tools used" footer INSIDE the assistant
-			// bubble so users have visual confirmation of what the LLM
-			// actually did — especially important when the LLM's own text
-			// is incomplete (e.g. "Let me first search…" with no follow-up
-			// synthesis, common with weaker tool-use models).
-			if (result.dispatched.length > 0) {
-				var chips = document.createElement("div");
-				chips.className = "lmw-tool-chips";
-				result.dispatched.forEach(function(d) {
-					var chip = document.createElement("span");
-					chip.className = "lmw-tool-chip" + (d.error ? " error" : "");
-					chip.textContent = (d.error ? "❌ " : "🔧 ") + d.toolCall.name;
-					if (d.error) chip.title = d.error.message;
-					chips.appendChild(chip);
-				});
-				assistantBody.appendChild(chips);
-			}
+			// Anything still pending never reported an outcome (a class that
+			// does not round-trip, or a dispatch that vanished). Reconcile
+			// from the loop's own record so no chip is left spinning.
+			result.dispatched.forEach(function(d) { resolveToolCall(d); });
+			pendingChips.forEach(function(chip) {
+				chip.className = "lmw-tool-chip";
+				chip.textContent = "🔧 " + chip.dataset.tool;
+			});
+			pendingChips = [];
 
 			// Skipped = LLM tried a tool that doesn't exist. Real signal.
 			if (result.skipped.length > 0) {
