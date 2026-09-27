@@ -18,6 +18,8 @@ minutes per run: most of it is waiting for the model.
 | `page_actions_test.rb` | A tool call changes real page state (`add_dictionaries` moves the form), and a host MCP tool answers from the server (`find_ids` → UBERON_0000945) |
 | `prompts_and_resources_test.rb` | The prompt template renders and runs, its arguments come from page state, and the resource is attached on turn 1 only — then again after Clear |
 | `resource_gate_test.rb` | A resource the server declares as over-budget or `on-demand` is never fetched at all |
+| `working_indicator_test.rb` | The panel says when it is working, stops saying so when it is not, and puts reasoning above the answer |
+| `ollama_only_test.rb` | The widget works with **no llm_meta_server at all** — chat straight to an Ollama, page actions and chips intact |
 
 ## How they assert
 
@@ -27,6 +29,12 @@ from what the assistant says: a model can claim it used the catalog, but the
 request body either carries `pubdictionaries://dictionaries` or it does not.
 
 ## Host page
+
+`ollama_only_test.rb` is the exception to everything below: it needs no host
+app and no hub. It renders the partial itself, serves it over a socket it
+opens, and talks to an Ollama — `OLLAMA_URL` and `OLLAMA_MODEL` override the
+defaults, and it exits with a clear SKIPPED if no Ollama answers. That also
+makes it the one test here that proves the partial stands alone.
 
 `PD_URL` overrides the page under test; it defaults to
 `https://test2.pubannotation.org/text_annotation`, which proxies to whichever
