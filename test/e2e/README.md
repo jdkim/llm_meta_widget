@@ -19,6 +19,7 @@ minutes per run: most of it is waiting for the model.
 | `prompts_and_resources_test.rb` | The prompt template renders and runs, its arguments come from page state, and the resource is attached on turn 1 only — then again after Clear |
 | `resource_gate_test.rb` | A resource the server declares as over-budget or `on-demand` is never fetched at all |
 | `working_indicator_test.rb` | The panel says when it is working, stops saying so when it is not, and puts reasoning above the answer |
+| `survives_navigation_test.rb` | The conversation survives a page navigation — transcript, tool record AND the model's context — and a different page starts fresh |
 | `ollama_only_test.rb` | The widget works with **no llm_meta_server at all** — chat straight to an Ollama, page actions and chips intact |
 
 ## How they assert

@@ -452,7 +452,8 @@
 	import { runChatLoop, fetchMcpManifest, listMcpPrompts, getMcpPrompt,
 	         listMcpResources, readMcpResource, promptMessagesToText,
 	         loadHostResource, resourceLinesForTurn, resolvePromptArguments,
-	         promptButtonProps, promptArgumentSummary, fetchOllamaModels } from "<%= orchestrator_path %>";
+	         promptButtonProps, promptArgumentSummary, fetchOllamaModels,
+	         createConversationStore, conversationKeyFor } from "<%= orchestrator_path %>";
 	import { marked } from "/llm_meta_widget_assets/marked.esm.js";
 
 	// Standard prose settings — GFM (tables, autolinks, strikethrough),
@@ -576,7 +577,26 @@
 		ro.observe(root);
 	}
 
-	var conversation = [];  // [{role, content}, ...] — grows across turns
+	// [{role, content, tools}] — grows across turns. `tools` is for the
+	// transcript only; the model is sent role and content.
+	var conversation = [];
+
+	// A page action that navigates used to take the conversation with it. The
+	// transcript lives in sessionStorage — per tab, gone when the tab closes —
+	// keyed by path, so submitting a form and landing back on the same page
+	// with a new query string keeps the thread.
+	var conversationStore = createConversationStore({
+		storage: window.sessionStorage,
+		key:     conversationKeyFor(window.location)
+	});
+
+	function persistConversation() {
+		conversationStore.save({
+			turns: conversation,
+			open:  !root.classList.contains("lmw-collapsed"),
+			model: MODEL
+		});
+	}
 	var actionsSchemaEl = document.getElementById(ACTIONS_SCHEMA_ID);
 	var localTools = actionsSchemaEl ? JSON.parse(actionsSchemaEl.textContent) : [];
 	var remoteToolsEl = document.getElementById(REMOTE_TOOLS_SCHEMA_ID);
@@ -845,6 +865,10 @@
 	var RESOURCE_BUDGET_BYTES = 8000;
 
 
+	// Before anything asynchronous: if this page was navigated away from and
+	// back, the visitor should see their conversation immediately.
+	restoreConversation();
+
 	var wellKnownReady = (async function() {
 		var urls = WELL_KNOWN_URLS === null
 			? [ window.location.origin + "/.well-known/mcp.json" ]
@@ -921,11 +945,39 @@
 		promptsEl.style.display = "";
 	}
 
+	// Put a saved transcript back on screen: the same bubbles, the same
+	// markdown, and the same record of which tools ran. Called once at boot,
+	// before the welcome block, which is only for a genuinely fresh start.
+	function restoreConversation() {
+		var saved = conversationStore.load();
+		if (!saved || !saved.turns.length) return false;
+
+		conversation = saved.turns;
+		saved.turns.forEach(function(turn) {
+			var body = appendTurn(turn.role, turn.role === "assistant" ? "" : turn.content);
+			if (turn.role === "assistant") renderMarkdownInto(body, turn.content || "");
+			if (!turn.tools || !turn.tools.length) return;
+			var row = document.createElement("div");
+			row.className = "lmw-tool-chips";
+			turn.tools.forEach(function(tool) {
+				var chip = document.createElement("span");
+				chip.className = "lmw-tool-chip" + (tool.error ? " error" : "");
+				chip.textContent = (tool.error ? "❌ " : "🔧 ") + tool.name;
+				row.appendChild(chip);
+			});
+			if (body.parentNode) body.parentNode.appendChild(row);
+		});
+		historyEl.scrollTop = historyEl.scrollHeight;
+		return true;
+	}
+
 	// A blank panel tells a first-time visitor nothing. Open with a greeting
 	// and the offers themselves — each template showing what it will take from
 	// the page and what it will ask for — so the assistant is the page's way
 	// in rather than a box you must already know how to talk to.
 	function renderWelcome() {
+		// A restored transcript is not a fresh start; the greeting would push
+		// the conversation the visitor is mid-way through off the screen.
 		if (!historyEl || historyEl.querySelector(".message")) return;
 		historyEl.textContent = "";
 
@@ -1238,6 +1290,7 @@
 	clearBtn.addEventListener("click", function() {
 		if (currentAbort) { try { currentAbort.abort(); } catch (e) { /* noop */ } }
 		conversation = [];
+		conversationStore.clear();
 		historyEl.innerHTML = "";
 		renderWelcome();
 	});
@@ -1280,7 +1333,7 @@
 
 			var resourceLines = await resourceLinesForThisTurn();
 			var messages = [{ role: "system", content: currentSystemPrompt(resourceLines) }]
-				.concat(conversation)
+				.concat(conversation.map(function(t) { return { role: t.role, content: t.content }; }))
 				.concat([{ role: "user", content: userText }]);
 
 			var result = await runChatLoop({
@@ -1331,8 +1384,17 @@
 					historyEl.scrollTop = historyEl.scrollHeight;
 				}
 			});
-			conversation.push({ role: "user",      content: userText });
-			conversation.push({ role: "assistant", content: result.content });
+			conversation.push({ role: "user", content: userText });
+			conversation.push({
+				role:    "assistant",
+				content: result.content,
+				// Kept so a restored transcript still shows what ran — losing
+				// that record is what made a navigating action unbearable.
+				tools:   result.dispatched.map(function(d) {
+					return d.error ? { name: d.toolCall.name, error: true } : { name: d.toolCall.name };
+				})
+			});
+			persistConversation();
 
 			// Anything still pending never reported an outcome (a class that
 			// does not round-trip, or a dispatch that vanished). Reconcile
