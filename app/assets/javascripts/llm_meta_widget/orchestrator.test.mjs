@@ -13,6 +13,7 @@ import assert from "node:assert/strict"
 
 import { resourceHints, planResourceAttachment, trimResourceText,
          loadHostResource, resourceLinesForTurn,
+         parseNdjsonStream, ollamaChatCall, fetchOllamaModels,
          promptArgFromState, resolvePromptArguments, promptButtonProps,
          promptArgumentSummary,
          STATIC_PRIMITIVES_META,
@@ -1351,4 +1352,180 @@ test("runChatLoop reports a failed tool through the same callback", async () => 
 
   assert.equal(seen.length, 1)
   assert.match(String(seen[0].error), /no such field/)
+})
+
+
+// ---- direct-to-Ollama provider -------------------------------------------
+
+function ndjsonResponse(frames) {
+  return new Response(frames.map((f) => JSON.stringify(f)).join("\n") + "\n",
+                      { status: 200, headers: { "Content-Type": "application/x-ndjson" } })
+}
+
+test("parseNdjsonStream yields one object per line", async () => {
+  const body = new Response('{"a":1}\n{"b":2}\n').body
+  const seen = []
+  for await (const frame of parseNdjsonStream(body)) seen.push(frame)
+  assert.deepEqual(seen, [ { a: 1 }, { b: 2 } ])
+})
+
+test("parseNdjsonStream survives a truncated line rather than aborting", async () => {
+  const body = new Response('{"a":1}\n{"oops"\n{"b":2}\n').body
+  const seen = []
+  for await (const frame of parseNdjsonStream(body)) seen.push(frame)
+  assert.deepEqual(seen, [ { a: 1 }, { b: 2 } ])
+})
+
+test("ollamaChatCall streams text and reports the finish reason", async () => {
+  const { result } = await withFetch(
+    [ { matches: (u) => u.includes("/api/chat"),
+        respond: () => ndjsonResponse([
+          { message: { role: "assistant", content: "Hi" }, done: false },
+          { message: { role: "assistant", content: " there" }, done: false },
+          { done: true, done_reason: "stop" }
+        ]) } ],
+    () => ollamaChatCall({ baseUrl: "http://ollama.test", modelName: "qwen3.8:27b",
+                           messages: [ { role: "user", content: "hi" } ] })
+  )
+  assert.equal(result.content, "Hi there")
+  assert.equal(result.finishReason, "stop")
+})
+
+test("ollamaChatCall surfaces tool calls in the shape the loop expects", async () => {
+  const announced = []
+  const { result } = await withFetch(
+    [ { matches: (u) => u.includes("/api/chat"),
+        respond: () => ndjsonResponse([
+          { message: { role: "assistant", content: "",
+                       tool_calls: [ { function: { name: "add_dictionaries", arguments: { names: [ "uberon" ] } } } ] },
+            done: false },
+          { done: true, done_reason: "stop" }
+        ]) } ],
+    () => ollamaChatCall({ baseUrl: "http://ollama.test", modelName: "m",
+                           messages: [ { role: "user", content: "add uberon" } ],
+                           onToolCall: (tc) => announced.push(tc) })
+  )
+  assert.equal(result.toolCalls.length, 1)
+  assert.equal(result.toolCalls[0].name, "add_dictionaries")
+  assert.deepEqual(result.toolCalls[0].arguments, { names: [ "uberon" ] })
+  assert.equal(announced.length, 1, "the caller is told as it is announced")
+})
+
+test("ollamaChatCall reports thinking separately from the answer", async () => {
+  const thinking = []
+  const phases = []
+  const { result } = await withFetch(
+    [ { matches: (u) => u.includes("/api/chat"),
+        respond: () => ndjsonResponse([
+          { message: { role: "assistant", thinking: "weighing it up" }, done: false },
+          { message: { role: "assistant", content: "answer" }, done: false },
+          { done: true }
+        ]) } ],
+    () => ollamaChatCall({ baseUrl: "http://ollama.test", modelName: "m",
+                           messages: [ { role: "user", content: "?" } ],
+                           onThinkingDelta: (d) => thinking.push(d),
+                           onPhase: (p) => phases.push(p) })
+  )
+  assert.deepEqual(thinking, [ "weighing it up" ])
+  assert.equal(result.content, "answer")
+  assert.deepEqual(phases, [ "thinking", "responding" ])
+})
+
+test("ollamaChatCall sends MCP-shaped tools in Ollama's function shape", async () => {
+  const { calls } = await withFetch(
+    [ { matches: (u) => u.includes("/api/chat"),
+        respond: () => ndjsonResponse([ { done: true } ]) } ],
+    () => ollamaChatCall({
+      baseUrl: "http://ollama.test", modelName: "m",
+      messages: [ { role: "user", content: "hi" } ],
+      localTools: [ { name: "set_text", description: "Set it",
+                      input_schema: { type: "object", properties: { text: { type: "string" } } } } ]
+    })
+  )
+  const sent = calls[0].body
+  assert.equal(sent.tools[0].type, "function")
+  assert.equal(sent.tools[0].function.name, "set_text")
+  assert.equal(sent.tools[0].function.parameters.properties.text.type, "string")
+})
+
+test("ollamaChatCall names the tool in a result message, as Ollama expects", async () => {
+  // The hub identifies a tool result by tool_call_id; Ollama does it by name.
+  const { calls } = await withFetch(
+    [ { matches: (u) => u.includes("/api/chat"),
+        respond: () => ndjsonResponse([ { done: true } ]) } ],
+    () => ollamaChatCall({
+      baseUrl: "http://ollama.test", modelName: "m",
+      messages: [
+        { role: "user", content: "add uberon" },
+        { role: "assistant", content: "", tool_calls: [ { id: "c1", name: "add_dictionaries", arguments: { names: [ "uberon" ] } } ] },
+        { role: "tool", tool_call_id: "c1", name: "add_dictionaries", content: '{"ok":true}' }
+      ]
+    })
+  )
+  const sent = calls[0].body
+  assert.equal(sent.messages[2].tool_name, "add_dictionaries")
+  assert.equal(sent.messages[2].tool_call_id, undefined)
+  assert.equal(sent.messages[1].tool_calls[0].function.name, "add_dictionaries")
+})
+
+test("runChatLoop can be pointed at Ollama instead of the hub", async () => {
+  let hubCalls = 0
+  let round = 0
+  const { result } = await withFetch(
+    [
+      { matches: (u) => u.includes("/single_llm_calls"), respond: () => { hubCalls++; return sseResponse(sseDoneOnly("hub")) } },
+      { matches: (u) => u.includes("/api/chat"),
+        respond: () => {
+          round++
+          return ndjsonResponse([ { message: { role: "assistant", content: round === 1 ? "direct" : "done" } }, { done: true } ])
+        } }
+    ],
+    () => runChatLoop({ ...BASE_OPTS, provider: "ollama" })
+  )
+  assert.equal(result.content, "direct")
+  assert.equal(hubCalls, 0, "the hub must not be contacted at all")
+})
+
+test("fetchOllamaModels lists what the local Ollama has, and never throws", async () => {
+  const { result } = await withFetch(
+    [ { matches: (u) => u.includes("/api/tags"),
+        respond: () => jsonResponse({ models: [ { name: "qwen3.8:27b" }, { name: "medgemma:4b" } ] }) } ],
+    () => fetchOllamaModels({ baseUrl: "http://ollama.test" })
+  )
+  assert.deepEqual(result, [ "qwen3.8:27b", "medgemma:4b" ])
+
+  const { result: onError } = await withFetch(
+    [ { matches: () => true, respond: () => { throw new Error("connection refused") } } ],
+    () => fetchOllamaModels({ baseUrl: "http://ollama.test" })
+  )
+  assert.deepEqual(onError, [], "an unreachable Ollama leaves the picker empty, not broken")
+})
+
+test("runChatLoop sends Class 1 tools to the hub even when Ollama answers the chat", async () => {
+  // The whole point of separating the two: your own Ollama for the LLM, a
+  // hub for its registered tools. Proxying the tool to the Ollama would be
+  // the obvious bug in that split.
+  const remoteTools = [ { id: 5, name: "search_pubmed" } ]
+  let round = 0
+  const { calls } = await withFetch(
+    [
+      { matches: (u) => u.includes("/api/chat"),
+        respond: () => {
+          round++
+          return round === 1
+            ? ndjsonResponse([ { message: { role: "assistant", content: "",
+                tool_calls: [ { function: { name: "search_pubmed", arguments: { q: "fever" } } } ] } }, { done: true } ])
+            : ndjsonResponse([ { message: { role: "assistant", content: "found some" } }, { done: true } ])
+        } },
+      { matches: (u) => u.includes("/mcp_tools/5/call"), respond: () => jsonResponse({ result: "3 papers" }) }
+    ],
+    () => runChatLoop({
+      ...BASE_OPTS, provider: "ollama", remoteTools,
+      baseUrl: "http://ollama.test", toolHubUrl: "https://hub.test"
+    })
+  )
+  const toolCall = calls.find((c) => c.url.includes("/mcp_tools/5/call"))
+  assert.ok(toolCall, "the tool must be dispatched")
+  assert.ok(toolCall.url.startsWith("https://hub.test"), `dispatched to ${toolCall.url}`)
+  assert.ok(calls.some((c) => c.url.startsWith("http://ollama.test")), "and the chat still goes to Ollama")
 })

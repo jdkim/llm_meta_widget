@@ -325,6 +325,14 @@ export async function runChatLoop(opts) {
     remoteTools = [],
     hostWideTools = [],
     maxRounds = 10,
+    // "hub" (default) talks to llm_meta_server; "ollama" talks straight to an
+    // Ollama, with no server component of ours in between. The loop is the
+    // same either way — only the call is swapped.
+    provider = "hub",
+    // Where Class 1 (hub-registered) tools are proxied. Usually the same
+    // llm_meta_server that answers the chat, but not when the chat goes
+    // straight to an Ollama — the tools still belong to the hub.
+    toolHubUrl,
     signal,
     onRoundStart,
     onTextDelta,
@@ -399,7 +407,9 @@ export async function runChatLoop(opts) {
     if (signal?.aborted) throw new DOMException("aborted", "AbortError")
     onRoundStart?.(round)
 
-    const turnResult = await singleLlmCall({
+    // The loop is the same whoever answers; only the call differs.
+    const call = provider === "ollama" ? ollamaChatCall : singleLlmCall
+    const turnResult = await call({
       ...singleOpts,
       messages,
       toolIds,
@@ -490,7 +500,7 @@ export async function runChatLoop(opts) {
       const args = coerceArguments(tc.arguments)
       try {
         const value = await dispatchRemoteToolCall({
-          baseUrl:     singleOpts.baseUrl,
+          baseUrl:     toolHubUrl || singleOpts.baseUrl,
           bearerToken: singleOpts.bearerToken,
           toolId:      tool.id,
           args:        args,
@@ -1006,3 +1016,172 @@ export function promptButtonProps(prompt) {
   }
 }
 
+
+// ---- direct-to-Ollama provider ------------------------------------------
+//
+// The smallest adoption: a Rails app and an Ollama, with no hub of ours in
+// between. Ollama's /api/chat already does the hard part — it takes tool
+// schemas and returns tool_calls — so what differs from the hub path is the
+// envelope: NDJSON rather than SSE, and its own request shape.
+//
+// What an adopter gives up is Class 1 (hub-registered MCP), which is the
+// hub's job by definition. Page actions and the host's own .well-known MCP
+// both work unchanged, and nothing the visitor types leaves their machine.
+//
+// Ollama must be told to accept the page's origin (OLLAMA_ORIGINS), the same
+// CORS story as the hub, configured elsewhere.
+
+export async function* parseNdjsonStream(readableStream, signal) {
+  const reader = readableStream.getReader()
+  const decoder = new TextDecoder("utf-8")
+  let buffer = ""
+
+  const onAbort = () => { try { reader.cancel() } catch { /* noop */ } }
+  signal?.addEventListener("abort", onAbort)
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      let nl
+      while ((nl = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, nl).trim()
+        buffer = buffer.slice(nl + 1)
+        if (!line) continue
+        try {
+          yield JSON.parse(line)
+        } catch (e) {
+          // A truncated or non-JSON line is not worth aborting a stream for.
+        }
+      }
+    }
+    const tail = buffer.trim()
+    if (tail) { try { yield JSON.parse(tail) } catch (e) { /* ignore */ } }
+  } finally {
+    signal?.removeEventListener("abort", onAbort)
+    try { reader.releaseLock() } catch { /* noop */ }
+  }
+}
+
+// Tool schemas travel as MCP-flavoured `input_schema`; Ollama wants OpenAI's
+// function shape.
+function toolsForOllama(localTools) {
+  return (localTools || []).map((t) => ({
+    type: "function",
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.input_schema || t.inputSchema || { type: "object", properties: {} }
+    }
+  }))
+}
+
+// The hub's history carries `tool_call_id`; Ollama identifies a result by the
+// tool's name instead, and rejects unknown keys on some versions.
+function messagesForOllama(messages) {
+  return (messages || []).map((m) => {
+    if (m.role === "tool") {
+      return { role: "tool", tool_name: m.name, content: m.content }
+    }
+    if (m.tool_calls) {
+      return {
+        role: m.role,
+        content: m.content || "",
+        tool_calls: m.tool_calls.map((tc) => ({
+          function: { name: tc.name, arguments: coerceArguments(tc.arguments) }
+        }))
+      }
+    }
+    return { role: m.role, content: m.content }
+  })
+}
+
+// Same signature and return shape as singleLlmCall, so runChatLoop does not
+// care which provider answered.
+export async function ollamaChatCall({
+  baseUrl,
+  modelName,
+  messages,
+  localTools = [],
+  generationSettings = {},
+  onTextDelta,
+  onThinkingDelta,
+  onToolCall,
+  onPhase,
+  signal,
+}) {
+  if (!baseUrl || !modelName) throw new Error("ollamaChatCall: baseUrl and modelName are required")
+  if (!Array.isArray(messages) || messages.length === 0) {
+    throw new Error("ollamaChatCall: messages must be a non-empty array")
+  }
+
+  const { think, ...options } = generationSettings || {}
+  const body = { model: modelName, messages: messagesForOllama(messages), stream: true }
+  if (localTools && localTools.length) body.tools = toolsForOllama(localTools)
+  if (think !== undefined) body.think = think
+  if (Object.keys(options).length) body.options = options
+
+  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => "")
+    throw new Error(`ollamaChatCall: HTTP ${response.status} ${response.statusText}${text ? " — " + text.slice(0, 200) : ""}`)
+  }
+  if (!response.body) throw new Error("ollamaChatCall: response has no body (streaming unsupported?)")
+
+  const toolCalls = []
+  let content = ""
+  let finishReason = null
+  let announcedPhase = null
+
+  const phase = (name) => {
+    if (announcedPhase === name) return
+    announcedPhase = name
+    onPhase?.(name)
+  }
+
+  for await (const frame of parseNdjsonStream(response.body, signal)) {
+    const message = frame.message || {}
+
+    if (message.thinking) {
+      phase("thinking")
+      onThinkingDelta?.(message.thinking)
+    }
+    if (message.content) {
+      phase("responding")
+      content += message.content
+      onTextDelta?.(message.content)
+    }
+    for (const tc of message.tool_calls || []) {
+      const call = {
+        id: tc.id || `ollama-${toolCalls.length}`,
+        name: tc.function?.name,
+        arguments: tc.function?.arguments ?? {}
+      }
+      toolCalls.push(call)
+      onToolCall?.(call)
+    }
+    if (frame.done) finishReason = frame.done_reason || "stop"
+  }
+
+  return { content, toolCalls, finishReason }
+}
+
+// Ollama's own catalogue, for the model picker when there is no hub to ask.
+export async function fetchOllamaModels({ baseUrl, signal }) {
+  try {
+    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/tags`, { signal })
+    if (!response.ok) return []
+    const data = await response.json()
+    return (data.models || []).map((m) => m.name).filter(Boolean)
+  } catch (e) {
+    // A picker that cannot be populated is not a reason to break the widget.
+    return []
+  }
+}
