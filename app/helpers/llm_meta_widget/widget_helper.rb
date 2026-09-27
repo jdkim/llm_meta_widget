@@ -16,7 +16,18 @@ module LlmMetaWidget
   # (page-embedded aiActions / host-wide well-known / hub-registered).
   module WidgetHelper
     DEFAULTS = {
-      api_key_uuid:            "ollama-local",
+      api_key_uuid:            "ollama-local",   # llm_meta_server provider only
+      # Answering the chat and registering tools are separate jobs. Name each
+      # endpoint for the job it does; neither implies the other.
+      #
+      #   llm_url:       who answers the chat (required)
+      #   llm_provider:  what it speaks — :llm_meta_server (default) or :ollama
+      #   tool_hub_url:  an llm_meta_server whose registered MCP tools to
+      #                  offer. Absent means none — which does NOT mean "no
+      #                  tools": page actions and the host's own
+      #                  .well-known/mcp.json are unaffected.
+      llm_provider:            "llm_meta_server",
+      tool_hub_url:            nil,
       orchestrator_path:       "/llm_meta_widget_assets/orchestrator.js",
       actions_schema_id:       "ai-actions",
       state_global:            "aiState",
@@ -42,9 +53,20 @@ module LlmMetaWidget
       greeting:                nil
     }.freeze
 
-    def llm_meta_widget(base_url:, model:, **overrides)
-      locals = DEFAULTS.merge(base_url: base_url, model: model, **overrides)
-      render partial: "llm_meta_widget/chat_panel", locals: locals
+    def llm_meta_widget(llm_url:, model:, **overrides)
+      locals = DEFAULTS.merge(llm_url: llm_url, model: model, **overrides)
+      provider = locals[:llm_provider].to_s
+      unless %w[llm_meta_server ollama].include?(provider)
+        raise ArgumentError,
+              "llm_meta_widget: llm_provider must be :llm_meta_server or :ollama, got #{provider.inspect}"
+      end
+      raise ArgumentError, "llm_meta_widget: llm_url is required" if llm_url.to_s.strip.empty?
+
+      hub = locals[:tool_hub_url]
+      hub = nil if hub.to_s.strip.empty?
+
+      render partial: "llm_meta_widget/chat_panel",
+             locals: locals.merge(llm_provider: provider, tool_hub_url: hub)
     end
   end
 end

@@ -452,7 +452,7 @@
 	import { runChatLoop, fetchMcpManifest, listMcpPrompts, getMcpPrompt,
 	         listMcpResources, readMcpResource, promptMessagesToText,
 	         loadHostResource, resourceLinesForTurn, resolvePromptArguments,
-	         promptButtonProps, promptArgumentSummary } from "<%= orchestrator_path %>";
+	         promptButtonProps, promptArgumentSummary, fetchOllamaModels } from "<%= orchestrator_path %>";
 	import { marked } from "/llm_meta_widget_assets/marked.esm.js";
 
 	// Standard prose settings — GFM (tables, autolinks, strikethrough),
@@ -460,7 +460,12 @@
 	// bare newlines still reads naturally.
 	marked.setOptions({ gfm: true, breaks: true });
 
-	var META_BASE              = <%= base_url.to_json.html_safe %>;
+	// Two endpoints, two jobs: one answers the chat, the other registers the
+	// MCP tools on offer. They are usually the same llm_meta_server, but need
+	// not be — an adopter can run their own Ollama and still borrow a hub's
+	// tools, or use no hub at all.
+	var LLM_BASE               = <%= llm_url.to_json.html_safe %>;
+	var TOOL_HUB_BASE          = <%= tool_hub_url.to_json.html_safe %>;
 	var API_KEY_UUID           = <%= api_key_uuid.to_json.html_safe %>;
 	var MODEL                  = <%= model.to_json.html_safe %>;
 	var ACTIONS_SCHEMA_ID      = <%= actions_schema_id.to_json.html_safe %>;
@@ -470,8 +475,12 @@
 	var REMOTE_TOOLS_SCHEMA_ID = <%= remote_tools_schema_id.to_json.html_safe %>;
 	var MAX_ROUNDS             = <%= max_rounds.to_json.html_safe %>;
 	var WELL_KNOWN_URLS        = <%= raw(well_known_urls.nil? ? "null" : well_known_urls.to_json) %>;
+	var LLM_PROVIDER           = <%= llm_provider.to_json.html_safe %>;
 	var ENABLE_MODEL_PICKER    = <%= enable_model_picker.to_json.html_safe %>;
-	var ENABLE_TOOL_PICKER     = <%= enable_tool_picker.to_json.html_safe %>;
+	// Class 1 tools are registered on a hub, so the picker needs one — which
+	// is independent of who answers the chat. Page actions and the host's own
+	// .well-known MCP work regardless.
+	var ENABLE_TOOL_PICKER     = <%= enable_tool_picker.to_json.html_safe %> && <%= tool_hub_url.to_json.html_safe %> !== null;
 	var MODEL_ALLOWLIST        = <%= raw(models.nil?    ? "null" : models.to_json) %>;
 	var HUB_TOOLS_ALLOWLIST    = <%= raw(hub_tools.nil? ? "null" : hub_tools.to_json) %>;
 
@@ -633,8 +642,27 @@
 		// still works with the initial `model:` + no hub tools).
 		var tasks = [];
 
-		if (ENABLE_MODEL_PICKER && modelPicker) {
-			tasks.push(fetch(META_BASE + "/api/llms", { headers: { "Accept": "application/json" } })
+		if (ENABLE_MODEL_PICKER && modelPicker && LLM_PROVIDER === "ollama") {
+			// No hub to ask: Ollama lists its own models.
+			tasks.push(fetchOllamaModels({ baseUrl: LLM_BASE }).then(function(names) {
+				var flat = names
+					.filter(function(n) { return anyAllowedByAllowlist(n, MODEL_ALLOWLIST); })
+					.map(function(n) { return { value: n, label: n }; });
+				if (!flat.some(function(m) { return m.value === MODEL; })) {
+					flat.unshift({ value: MODEL, label: MODEL });
+				}
+				modelPicker.innerHTML = "";
+				flat.forEach(function(m) {
+					var opt = document.createElement("option");
+					opt.value = m.value;
+					opt.textContent = m.label;
+					if (m.value === MODEL) opt.selected = true;
+					modelPicker.appendChild(opt);
+				});
+				if (flat.length > 1) modelPicker.style.display = "";
+			}));
+		} else if (ENABLE_MODEL_PICKER && modelPicker) {
+			tasks.push(fetch(LLM_BASE + "/api/llms", { headers: { "Accept": "application/json" } })
 				.then(function(r) { return r.ok ? r.json() : { llms: [] }; })
 				.then(function(payload) {
 					// /api/llms is heterogeneous per family:
@@ -671,7 +699,7 @@
 		}
 
 		if (ENABLE_TOOL_PICKER && toolsListEl) {
-			tasks.push(fetch(META_BASE + "/api/mcp_servers", { headers: { "Accept": "application/json" } })
+			tasks.push(fetch(TOOL_HUB_BASE + "/api/mcp_servers", { headers: { "Accept": "application/json" } })
 				.then(function(r) { return r.ok ? r.json() : { mcp_servers: [] }; })
 				.then(function(payload) {
 					hubMcpServers = (payload.mcp_servers || []).filter(function(s) {
@@ -1256,7 +1284,8 @@
 				.concat([{ role: "user", content: userText }]);
 
 			var result = await runChatLoop({
-				baseUrl:       META_BASE,
+				baseUrl:       LLM_BASE,
+				toolHubUrl:    TOOL_HUB_BASE,
 				apiKeyUuid:    API_KEY_UUID,
 				modelName:     MODEL,
 				messages:      messages,
@@ -1265,6 +1294,7 @@
 				hostWideTools: hostWideTools,
 				aiActions:     window[ACTIONS_GLOBAL] || {},
 				maxRounds:     MAX_ROUNDS,
+				provider:      LLM_PROVIDER === "ollama" ? "ollama" : "hub",
 				signal:        currentAbort.signal,
 				onToolCall: function(toolCall) { announceToolCall(toolCall); },
 				onToolDispatched: function(outcome) { resolveToolCall(outcome); },
