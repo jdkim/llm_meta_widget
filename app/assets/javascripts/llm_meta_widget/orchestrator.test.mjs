@@ -14,6 +14,7 @@ import assert from "node:assert/strict"
 import { resourceHints, planResourceAttachment, trimResourceText,
          loadHostResource, resourceLinesForTurn,
          parseNdjsonStream, ollamaChatCall, fetchOllamaModels,
+         packConversation, unpackConversation, createConversationStore, conversationKeyFor,
          promptArgFromState, resolvePromptArguments, promptButtonProps,
          promptArgumentSummary,
          STATIC_PRIMITIVES_META,
@@ -1528,4 +1529,93 @@ test("runChatLoop sends Class 1 tools to the hub even when Ollama answers the ch
   assert.ok(toolCall, "the tool must be dispatched")
   assert.ok(toolCall.url.startsWith("https://hub.test"), `dispatched to ${toolCall.url}`)
   assert.ok(calls.some((c) => c.url.startsWith("http://ollama.test")), "and the chat still goes to Ollama")
+})
+
+
+// ---- surviving navigation ------------------------------------------------
+
+const TURNS = [
+  { role: "user", content: "annotate this" },
+  { role: "assistant", content: "done", tools: [ { name: "text_annotation" } ] }
+]
+
+test("a packed conversation round-trips", () => {
+  const back = unpackConversation(packConversation({ turns: TURNS, open: true, model: "qwen3.8:27b" }))
+  assert.equal(back.turns.length, 2)
+  assert.equal(back.turns[1].content, "done")
+  assert.equal(back.open, true)
+  assert.equal(back.model, "qwen3.8:27b")
+})
+
+test("packing keeps the tools a turn ran", () => {
+  // Losing the record of what ran is the complaint that started this.
+  const back = unpackConversation(packConversation({ turns: TURNS }))
+  assert.deepEqual(back.turns[1].tools, [ { name: "text_annotation" } ])
+})
+
+test("packing drops the oldest turns past the cap", () => {
+  const many = Array.from({ length: 50 }, (_, i) => ({ role: "user", content: `turn ${i}` }))
+  const back = unpackConversation(packConversation({ turns: many, maxTurns: 10 }))
+  assert.equal(back.turns.length, 10)
+  assert.equal(back.turns[0].content, "turn 40", "the recent end is the one worth keeping")
+})
+
+test("packing trims until it fits the byte budget", () => {
+  const fat = Array.from({ length: 20 }, () => ({ role: "user", content: "x".repeat(1000) }))
+  const raw = packConversation({ turns: fat, maxBytes: 5000 })
+  assert.ok(raw.length <= 5000, `packed to ${raw.length} bytes`)
+  assert.ok(unpackConversation(raw).turns.length >= 1)
+})
+
+test("unpacking refuses anything it cannot trust", () => {
+  assert.equal(unpackConversation(null), null)
+  assert.equal(unpackConversation("not json"), null)
+  assert.equal(unpackConversation(JSON.stringify({ v: 999, turns: [] })), null, "a future format")
+  assert.equal(unpackConversation(JSON.stringify({ v: 1 })), null, "no turns at all")
+})
+
+test("unpacking discards turns that are not a conversation", () => {
+  const raw = JSON.stringify({ v: 1, turns: [
+    { role: "user", content: "keep" },
+    { role: "system", content: "drop" },
+    { role: "assistant" },
+    { content: "no role" }
+  ] })
+  assert.deepEqual(unpackConversation(raw).turns.map((t) => t.content), [ "keep" ])
+})
+
+test("the store survives storage that throws", () => {
+  // Private windows and blocked site data throw on access; the widget must
+  // carry on without a transcript rather than break.
+  const hostile = { getItem() { throw new Error("denied") },
+                    setItem() { throw new Error("denied") },
+                    removeItem() { throw new Error("denied") } }
+  const store = createConversationStore({ storage: hostile, key: "k" })
+  assert.equal(store.save({ turns: TURNS }), false)
+  assert.equal(store.load(), null)
+  assert.equal(store.clear(), false)
+})
+
+test("the store saves, loads and clears", () => {
+  const backing = new Map()
+  const storage = {
+    getItem: (k) => (backing.has(k) ? backing.get(k) : null),
+    setItem: (k, v) => backing.set(k, v),
+    removeItem: (k) => backing.delete(k)
+  }
+  const store = createConversationStore({ storage, key: "llm_meta_widget:/text_annotation" })
+
+  assert.equal(store.load(), null)
+  assert.equal(store.save({ turns: TURNS, open: true }), true)
+  assert.equal(store.load().turns.length, 2)
+  store.clear()
+  assert.equal(store.load(), null)
+})
+
+test("the key ignores the query string, so a form submit keeps its conversation", () => {
+  const before = conversationKeyFor({ pathname: "/text_annotation" })
+  const after = conversationKeyFor({ pathname: "/text_annotation" })
+  assert.equal(before, after)
+  assert.notEqual(before, conversationKeyFor({ pathname: "/dictionaries" }),
+                  "a different page is a different conversation")
 })

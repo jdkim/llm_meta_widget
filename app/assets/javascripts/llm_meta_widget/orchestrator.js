@@ -1185,3 +1185,74 @@ export async function fetchOllamaModels({ baseUrl, signal }) {
     return []
   }
 }
+
+// ---- surviving navigation ------------------------------------------------
+//
+// A page action that navigates — submitting a form, following a link — used to
+// destroy the conversation, the record of what ran and the scroll position.
+// That made such actions unsafe to offer at all: PubDictionaries had to stop
+// declaring its submit action rather than let the assistant wipe the chat.
+//
+// The transcript is kept in sessionStorage: per tab, gone when the tab closes,
+// invisible to other visitors. Keyed by pathname rather than full URL, because
+// submitting a form usually returns to the same page with different query
+// parameters and that is exactly the case worth surviving.
+
+export const CONVERSATION_FORMAT = 1
+
+export function packConversation({ turns = [], open = false, model = null,
+                                   maxTurns = 40, maxBytes = 200000 } = {}) {
+  // Oldest turns go first when trimming: the recent ones carry the thread.
+  let kept = turns.slice(-maxTurns)
+  let payload = { v: CONVERSATION_FORMAT, savedAt: Date.now(), open, model, turns: kept }
+  let json = JSON.stringify(payload)
+
+  while (json.length > maxBytes && kept.length > 1) {
+    kept = kept.slice(1)
+    payload = { ...payload, turns: kept }
+    json = JSON.stringify(payload)
+  }
+  return json
+}
+
+export function unpackConversation(raw) {
+  if (!raw) return null
+  let payload
+  try {
+    payload = JSON.parse(raw)
+  } catch (e) {
+    return null
+  }
+  // A payload from a different format is not worth guessing at; starting
+  // fresh is better than rendering something half-understood.
+  if (!payload || payload.v !== CONVERSATION_FORMAT || !Array.isArray(payload.turns)) return null
+
+  const turns = payload.turns.filter((t) => t && typeof t.content === "string" &&
+                                            (t.role === "user" || t.role === "assistant"))
+  return { turns, open: !!payload.open, model: payload.model || null, savedAt: payload.savedAt || 0 }
+}
+
+// Storage can throw — private windows, blocked site data, quota — and none of
+// that is a reason for the widget to stop working.
+export function createConversationStore({ storage, key }) {
+  const safely = (fn, fallback = null) => {
+    try {
+      return fn()
+    } catch (e) {
+      return fallback
+    }
+  }
+
+  return {
+    key,
+    save(state) { return safely(() => { storage.setItem(key, packConversation(state)); return true }, false) },
+    load() { return safely(() => unpackConversation(storage.getItem(key))) },
+    clear() { return safely(() => { storage.removeItem(key); return true }, false) }
+  }
+}
+
+export function conversationKeyFor(location, prefix = "llm_meta_widget") {
+  // Path only: a form submit returns to the same page with a new query string,
+  // and that conversation is still the same conversation.
+  return `${prefix}:${location.pathname}`
+}
