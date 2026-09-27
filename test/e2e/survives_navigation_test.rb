@@ -45,6 +45,18 @@ begin
   sleep 3
 
   results[:panel_reopened] = d.execute_script("return !document.querySelector('#llm-meta-widget-chat').classList.contains('lmw-collapsed')")
+
+  # A panel restored at boot is measured while the page is still laying out.
+  # Positioning from that measurement anchored a sliver to the bottom edge —
+  # and the size was then SAVED, so every later visit reopened wrong.
+  results[:geometry] = d.execute_script(<<~JS)
+    var r = document.querySelector("#llm-meta-widget-chat").getBoundingClientRect();
+    return { width: Math.round(r.width), height: Math.round(r.height),
+             top: Math.round(r.top), left: Math.round(r.left),
+             withinViewport: r.top >= 0 && r.left >= 0 &&
+                             r.bottom <= window.innerHeight + 1 && r.right <= window.innerWidth + 1,
+             storedSize: (function(){ try { return localStorage.getItem("llm_meta_widget:size"); } catch (e) { return "unreadable"; } })() };
+  JS
   results[:after] = { bubbles: bubbles.(), text: msgs.()[-120..] }
   results[:transcript_survived] =
     results[:after][:bubbles] >= results[:before][:bubbles] ? "PASS" : "FAIL — transcript lost on navigation"

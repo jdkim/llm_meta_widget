@@ -505,23 +505,39 @@
 	var STORAGE_KEY_OPEN = "llm_meta_widget:open";
 	var STORAGE_KEY_SIZE = "llm_meta_widget:size";  // stored as "WxH" in px
 
+	// Floors matching the CSS min-width/min-height (24em / 16em). A panel
+	// measured mid-layout reports a few pixels; saving that produced a sliver
+	// anchored off the bottom of the window, and — worse — it was stored, so
+	// every later visit reopened at the sliver size. Sizes below the floor are
+	// neither saved nor honoured, which also heals a value already stored.
+	var MIN_SAVED_WIDTH  = 320;
+	var MIN_SAVED_HEIGHT = 240;
+
+	function plausibleSize(w, h) {
+		return w >= MIN_SAVED_WIDTH && h >= MIN_SAVED_HEIGHT &&
+		       w <= window.innerWidth * 2 && h <= window.innerHeight * 2;
+	}
+
 	function applyStoredSize() {
 		try {
 			var raw = localStorage.getItem(STORAGE_KEY_SIZE);
 			if (!raw) return;
 			var parts = raw.split("x");
 			var w = parseInt(parts[0], 10), h = parseInt(parts[1], 10);
-			if (w > 0 && h > 0) {
-				root.style.width  = w + "px";
-				root.style.height = h + "px";
+			if (!plausibleSize(w, h)) {
+				localStorage.removeItem(STORAGE_KEY_SIZE);   // heal a bad value
+				return;
 			}
+			root.style.width  = w + "px";
+			root.style.height = h + "px";
 		} catch (e) { /* noop */ }
 	}
 	function saveCurrentSize() {
 		try {
 			var rect = root.getBoundingClientRect();
-			localStorage.setItem(STORAGE_KEY_SIZE,
-				Math.round(rect.width) + "x" + Math.round(rect.height));
+			var w = Math.round(rect.width), h = Math.round(rect.height);
+			if (!plausibleSize(w, h)) return;   // layout noise, not a choice
+			localStorage.setItem(STORAGE_KEY_SIZE, w + "x" + h);
 		} catch (e) { /* noop */ }
 	}
 
@@ -529,13 +545,20 @@
 	// size it currently has. Uses top/left in pixels (required for CSS
 	// `resize: both` — a bottom/right-pinned element can't be dragged out
 	// past the viewport edge to grow).
-	function positionAtBottomRight() {
+	function positionAtBottomRight(attempt) {
 		var margin = 16;  // ~1em from the viewport edges
 		var rect = root.getBoundingClientRect();
 		var top  = Math.max(margin, window.innerHeight - rect.height - margin);
 		var left = Math.max(margin, window.innerWidth  - rect.width  - margin);
 		root.style.top  = top  + "px";
 		root.style.left = left + "px";
+
+		// Measured before layout settled: the panel reports a sliver and gets
+		// anchored to the very bottom of the window. Re-measure next frame.
+		var tries = attempt || 0;
+		if (rect.height < MIN_SAVED_HEIGHT && tries < 3 && typeof requestAnimationFrame === "function") {
+			requestAnimationFrame(function() { positionAtBottomRight(tries + 1); });
+		}
 	}
 
 	function setOpen(open) {
@@ -561,6 +584,9 @@
 	var initialOpen = false;
 	try { initialOpen = localStorage.getItem(STORAGE_KEY_OPEN) === "1"; } catch (e) { /* noop */ }
 	setOpen(initialOpen);
+	window.addEventListener("resize", function() {
+		if (!root.classList.contains("lmw-collapsed")) positionAtBottomRight();
+	});
 
 	toggleBtn.addEventListener("click", function() { setOpen(true); });
 	hideBtn.addEventListener("click", function() { setOpen(false); });
@@ -569,9 +595,14 @@
 	// continuously during a drag; save + reposition on each tick so the
 	// widget stays anchored to bottom-right as the user grows it.
 	if (typeof ResizeObserver === "function") {
+		var sawFirstResizeTick = false;
 		var ro = new ResizeObserver(function() {
 			if (root.classList.contains("lmw-collapsed")) return;
 			positionAtBottomRight();
+			// ResizeObserver always delivers an initial observation, and that
+			// one reports whatever the layout happened to be mid-boot. Only
+			// later ticks can be a user dragging the corner.
+			if (!sawFirstResizeTick) { sawFirstResizeTick = true; return; }
 			saveCurrentSize();
 		});
 		ro.observe(root);
