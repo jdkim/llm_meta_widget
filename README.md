@@ -8,19 +8,25 @@ Client-orchestrated: the widget fetches host-side action schemas + host-publishe
 
 ## What you need first
 
-The widget is a browser front end. It does not talk to OpenAI, Anthropic or
-Ollama itself — it talks to **[llm_meta_server](https://github.com/pubannotation)**,
-a hub that holds the provider credentials and streams responses back over SSE.
-So adopting the widget means either running a hub or being given the URL of one.
+The widget is a browser front end: it needs something to answer the chat. That
+can be **[llm_meta_server](https://github.com/pubannotation)** — a hub that
+holds provider credentials and streams responses back — or **an Ollama**,
+which the widget talks to directly with no server component of ours in
+between.
 
-Nothing else is required: no database, no migrations, no JavaScript build step,
-no Node at runtime. The gem ships plain ES modules that the engine serves.
+Those are separate from where tools come from. A hub also registers MCP tools
+(Class 1 below), and you can point at one for tools while a local Ollama
+answers the chat, or use no hub at all. Page actions and your own
+`.well-known/mcp.json` never involve a hub either way.
+
+Nothing else is required: no database, no migrations, no JavaScript build
+step, no Node at runtime.
 
 | Requirement | Version |
 |---|---|
 | Ruby | >= 3.2 |
 | Rails | >= 8.0 (8.1 not required) |
-| A reachable llm_meta_server | any |
+| An llm_meta_server **or** an Ollama | any |
 
 ## Installation
 
@@ -45,7 +51,7 @@ Put this on any view — a fresh `pages/demo.html.erb` is fine:
 ```erb
 <h1>Demo</h1>
 
-<%= llm_meta_widget(base_url: "https://your-meta-server.example",
+<%= llm_meta_widget(llm_url:  "https://your-meta-server.example",
                     model:    "qwen3-6-35b-fast",
                     greeting: "Hi — ask me anything about this page.") %>
 ```
@@ -63,8 +69,9 @@ says so explicitly.
 
 Two more things worth knowing before you go further:
 
-- `base_url` must be reachable from your visitors' browsers, not just from
-  your server. `localhost` works only while you are the visitor.
+- `llm_url` must be reachable from your visitors' browsers, not just from
+  your server. `localhost` works only while you are the visitor — which is
+  fine when each visitor runs their own Ollama.
 - The model name is the hub's name for it (`GET /api/llms` lists them), not
   the provider's.
 
@@ -185,7 +192,8 @@ To adjust picker behavior at the helper call site:
 
 ```erb
 <%= llm_meta_widget(
-      base_url:            "https://your-meta-server.example",
+      llm_url:             "https://your-meta-server.example",
+      tool_hub_url:        "https://your-meta-server.example",
       model:               "qwen3-6-35b-fast",   # initial selection
       enable_model_picker: true,                 # false → hide picker, use fixed `model:`
       enable_tool_picker:  true,                 # false → hide picker, no Class-1 tools
@@ -197,7 +205,7 @@ To adjust picker behavior at the helper call site:
 To lock the widget to the fixed `model:` prop and disable Class-1 tools entirely (level-0 mode — Class 2 & 3 still work):
 
 ```erb
-<%= llm_meta_widget(base_url: "…", model: "…",
+<%= llm_meta_widget(llm_url: "…", model: "…",
                     enable_model_picker: false,
                     enable_tool_picker:  false) %>
 ```
@@ -206,7 +214,9 @@ To lock the widget to the fixed `model:` prop and disable Class-1 tools entirely
 
 | Option | Default | Purpose |
 |---|---|---|
-| `base_url:` | required | Meta-server URL |
+| `llm_url:` | required | Who answers the chat — an llm_meta_server, or an Ollama |
+| `llm_provider:` | `:llm_meta_server` | What `llm_url` speaks. `:ollama` talks to Ollama's `/api/chat` directly |
+| `tool_hub_url:` | `nil` | An llm_meta_server whose registered MCP tools to offer. Absent = none (page actions and your own `.well-known` MCP are unaffected) |
 | `model:` | required | Initial model (also the fallback when picker is disabled) |
 | `api_key_uuid:` | `"ollama-local"` | Hub API-key uuid to invoke |
 | `orchestrator_path:` | `"/llm_meta_widget_assets/orchestrator.js"` | Served by the gem's engine; rarely overridden |
@@ -221,6 +231,45 @@ To lock the widget to the fixed `model:` prop and disable Class-1 tools entirely
 | `enable_tool_picker:` | `true` | Show tool picker (Level-1) |
 | `models:` | `nil` | Model-name allowlist; `nil` = all anon-available |
 | `hub_tools:` | `nil` | MCP-server-name allowlist; `nil` = all anon-public |
+
+## Choosing what answers the chat, and whose tools to offer
+
+Two independent settings, because they are two jobs. Neither implies the
+other, so there is nothing to disable and nothing to inherit — what a widget
+does is what its call site says.
+
+```erb
+<%# a hub answers the chat; its registered tools are offered too %>
+<% hub = "https://your-meta-server.example" %>
+<%= llm_meta_widget(llm_url: hub, tool_hub_url: hub, model: "qwen3-6-35b-fast") %>
+
+<%# a hub answers the chat; no hub-registered tools %>
+<%= llm_meta_widget(llm_url: hub, model: "qwen3-6-35b-fast") %>
+
+<%# the visitor's own Ollama answers; a hub still supplies its tools %>
+<%= llm_meta_widget(llm_url: "http://localhost:11434", llm_provider: :ollama,
+                    tool_hub_url: hub, model: "qwen3.8:27b") %>
+
+<%# nothing of ours in the path at all %>
+<%= llm_meta_widget(llm_url: "http://localhost:11434", llm_provider: :ollama,
+                    model: "qwen3.8:27b") %>
+```
+
+**The Ollama path.** The widget POSTs to `{llm_url}/api/chat` and reads
+Ollama's NDJSON stream; tool schemas go over as OpenAI-shaped functions and
+`tool_calls` come back, so Class 2 and Class 3 tools work exactly as they do
+against a hub. The model picker lists `{llm_url}/api/tags`. Ollama must be
+told to accept your page's origin — `OLLAMA_ORIGINS=https://your-site.example`
+— which is the same CORS story as the hub, configured elsewhere.
+
+What you give up without a `tool_hub_url` is Class 1 only: tools registered on
+somebody's hub. That is not "no tools" — page actions and your own
+`.well-known/mcp.json` are untouched, and they are the interesting ones for an
+assistant embedded in your page.
+
+**Why anyone would want the last shape:** with a local Ollama and local MCP
+endpoints, nothing a visitor types leaves the machine. No credentials to hold,
+no retention policy to write.
 
 ## Declaring resources and prompts (static-primitives extension)
 
