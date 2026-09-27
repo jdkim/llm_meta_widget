@@ -232,6 +232,23 @@ To lock the widget to the fixed `model:` prop and disable Class-1 tools entirely
 | `models:` | `nil` | Model-name allowlist; `nil` = all anon-available |
 | `hub_tools:` | `nil` | MCP-server-name allowlist; `nil` = all anon-public |
 
+## Surviving navigation
+
+A page action that navigates — submitting a form, following a link — no longer
+loses the conversation. The transcript, the record of which tools ran, and the
+model's own context are kept in `sessionStorage`: per tab, gone when the tab
+closes, never sent anywhere.
+
+The key is the page's **path**, not its full URL, so a form submit that returns
+to the same page with a new query string keeps the thread, while moving to a
+different page starts a fresh one. Nothing to configure.
+
+Two consequences worth knowing. An action of yours that navigates is now safe
+to declare — before this, offering one meant offering to wipe the visitor's
+chat. And if the navigation lands on an error page that does not render the
+widget, the conversation is still in storage but there is no panel to show it
+until the visitor returns to a page that has one.
+
 ## Choosing what answers the chat, and whose tools to offer
 
 Two independent settings, because they are two jobs. Neither implies the
