@@ -220,7 +220,7 @@ function indexOfEither(str, a, b) {
 }
 
 // ---------------------------------------------------------------------------
-// runTurn — one LLM turn + fire-and-forget local dispatch
+// runTurn — one LLM turn + local dispatch, results fed back
 // ---------------------------------------------------------------------------
 //
 // The Piece-B primitive: driven by `singleLlmCall`, then after `done` invokes
@@ -290,7 +290,7 @@ export async function dispatchLocalToolCalls(toolCalls, aiActions) {
 //   1. call `singleLlmCall` with merged local_tools (Class 2 + 3 schemas) +
 //      tool_ids (Class 1 references)
 //   2. classify emitted tool_calls by name (aiActions → hostWide → remote → unknown)
-//   3. dispatch Class 3 fire-and-forget
+//   3. dispatch Class 3 locally, keeping each outcome as a tool result
 //   4. dispatch Class 2 via direct MCP; Class 1 via meta-server proxy;
 //      collect results in emission order
 //   5. if any round-trip results, append assistant-with-tool_calls turn and
@@ -458,7 +458,7 @@ export async function runChatLoop(opts) {
       }
     }
 
-    // Class 3: locals — fire-and-forget
+    // Class 3: locals — dispatched here, round-tripped just below
     const localOut = await dispatchLocalToolCalls(localCalls, aiActions)
     allDispatched.push(...localOut.dispatched)
 

@@ -1,16 +1,23 @@
 module LlmMetaWidget
   # Renders the client-orchestrated chat widget on the current page.
   #
-  #   <%= llm_meta_widget(base_url: "https://llmbranch.dbcls.jp",
-  #                       model:    "qwen3-6-35b-fast") %>
+  #   <%= llm_meta_widget(llm_url:      "https://llmbranch.dbcls.jp",
+  #                       tool_hub_url: "https://llmbranch.dbcls.jp",
+  #                       model:        "qwen3-6-35b-fast") %>
+  #
+  # `llm_url` answers the chat; `tool_hub_url` names an llm_meta_server whose
+  # registered MCP tools to offer and is optional — absent means none, which
+  # does not disable page actions or the host's own .well-known/mcp.json.
   #
   # The host page must ALSO provide:
   #   - <script type="application/json" id="ai-actions">…</script> — local
   #     action schemas (name/description/input_schema each).
   #   - window.aiState — reader functions called each turn to build the
   #     system prompt with current page state.
-  #   - window.aiActions — action implementations invoked fire-and-forget
-  #     when the LLM emits a matching tool_call.
+  #   - window.aiActions — action implementations invoked when the LLM emits
+  #     a matching tool_call. Since 0.4.0 each one's outcome is fed back as a
+  #     tool result and the turn continues, so a flow may write to the page
+  #     and then keep working.
   #
   # See llm_meta_widget's README for the three MCP-tool classes it supports
   # (page-embedded aiActions / host-wide well-known / hub-registered).

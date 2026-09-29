@@ -1,10 +1,13 @@
 <%# Chat-panel widget for the client-orchestrated flow. Render via the %>
-<%# llm_meta_widget helper — see llm_meta_widget_helper.rb for options. %>
+<%# llm_meta_widget helper — see %>
+<%# app/helpers/llm_meta_widget/widget_helper.rb for the full option list. %>
 <%# %>
-<%# Required locals: base_url, model. %>
+<%# Required locals: llm_url, model. %>
 <%# Optional locals (helper defaults): %>
-<%#   api_key_uuid, orchestrator_path, actions_schema_id, state_global, %>
-<%#   actions_global, remote_tools_schema_id, well_known_urls, max_rounds. %>
+<%#   llm_provider, tool_hub_url, api_key_uuid, orchestrator_path, %>
+<%#   actions_schema_id, state_global, actions_global, %>
+<%#   remote_tools_schema_id, well_known_urls, max_rounds, greeting, %>
+<%#   enable_model_picker, enable_tool_picker, models, hub_tools. %>
 <%# %>
 <%# The host page must ALSO provide: %>
 <%#   (a) a JSON schema block with id = actions_schema_id, listing the %>
