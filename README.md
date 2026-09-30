@@ -90,7 +90,10 @@ Declared inline on the same view as the widget. Runs as JavaScript in the browse
 **Declaration** — three script blocks on the view:
 
 ```html
-<!-- (a) Tool schemas the LLM sees. JSON Schema (draft-2020-12 subset). -->
+<!-- (a) Tool schemas the LLM sees. JSON Schema vocabulary — in practice
+     type, properties, required, description, items, enum. No $schema is
+     declared and nothing here validates one: the object is forwarded to
+     the provider as-is, and each provider accepts its own subset. -->
 <script type="application/json" id="ai-actions">
 [
   { "name": "add_dictionaries",
