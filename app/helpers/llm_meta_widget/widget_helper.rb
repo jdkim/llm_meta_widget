@@ -35,7 +35,9 @@ module LlmMetaWidget
       #                  .well-known/mcp.json are unaffected.
       llm_provider:            "llm_meta_server",
       tool_hub_url:            nil,
-      orchestrator_path:       "/llm_meta_widget_assets/orchestrator.js",
+      # The one module a page loads. Override to serve it from a CDN
+      # instead of this gem (same file, published to npm).
+      element_path:            "/llm_meta_widget_assets/llm-meta-widget.js",
       actions_schema_id:       "ai-actions",
       state_global:            "aiState",
       actions_global:          "aiActions",
@@ -59,6 +61,26 @@ module LlmMetaWidget
       # first-time visitor nothing about what the assistant can do for them.
       greeting:                nil
     }.freeze
+
+    # Renders `name="value"`, or nothing when the value is absent. Attribute
+    # omission is meaningful to the element: an omitted allowlist means "no
+    # allowlist", and an omitted well-known-urls means "auto-discover".
+    def tag_attr(name, value)
+      return "".html_safe if value.nil? || value.to_s.empty?
+
+      %(#{name}="#{ERB::Util.html_escape(value)}").html_safe
+    end
+
+    # well-known-urls is tri-state, and `[]` must survive as an EMPTY attribute
+    # rather than be dropped the way tag_attr drops blanks:
+    #   nil   -> omitted            -> auto-discover same-origin
+    #   []    -> well-known-urls="" -> discovery off
+    #   [a,b] -> "a,b"              -> fetch those
+    def well_known_attr(urls)
+      return "".html_safe if urls.nil?
+
+      %(well-known-urls="#{ERB::Util.html_escape(Array(urls).join(","))}").html_safe
+    end
 
     def llm_meta_widget(llm_url:, model:, **overrides)
       locals = DEFAULTS.merge(llm_url: llm_url, model: model, **overrides)

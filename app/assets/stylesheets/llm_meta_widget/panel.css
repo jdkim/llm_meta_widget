@@ -1,0 +1,363 @@
+/* The chat panel's own styles. Extracted from _chat_panel.html.erb when the
+   panel became a custom element; bundled into the element so a non-Rails host
+   serves no stylesheet of its own. Conversation-surface styles (bubbles, role
+   labels, thinking blocks) stay in conversation.css. */
+	/* Widget-specific chrome — floating container, header, scroll region,
+	 * input area. Everything BUBBLE / THINKING / ROLE-related lives in the
+	 * shared conversation.css above. */
+	#llm-meta-widget-chat {
+		/* Positioned via JS on open (see setOpen()) so top/left are set in
+		 * pixels — required for CSS `resize: both` to grow correctly
+		 * (bottom/right anchoring blocks the resize handle from being
+		 * dragged outward from viewport corner). */
+		position: fixed;
+		width: 40em; height: 55vh;
+		min-width: 24em; min-height: 16em;
+		max-width: calc(100vw - 2em); max-height: calc(100vh - 2em);
+		background: #ffffff;
+		border: 1px solid #e5e7eb;
+		border-radius: 8px;
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+		padding: 10px;
+		z-index: 9999;
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+		font-size: 14px;
+		color: #1f2937;
+		display: flex; flex-direction: column;
+		/* Native drag-to-resize handle appears at bottom-right when
+		 * overflow != visible. overflow:hidden clips at widget edge; the
+		 * inner .lmw-messages has its own scroll so no content is lost. */
+		resize: both;
+		overflow: hidden;
+	}
+	#llm-meta-widget-chat.lmw-collapsed { display: none; }
+
+	/* Collapsed-state toggle — a small floating chat-bubble button in the
+	 * bottom-right corner. Always in the DOM; visible only when the chat
+	 * panel is collapsed. Click to open the chat panel; the panel's × button
+	 * collapses back to this. State persists across page loads via
+	 * localStorage (see the JS below). */
+	#llm-meta-widget-toggle {
+		position: fixed; bottom: 1em; right: 1em;
+		width: 52px; height: 52px;
+		border-radius: 26px;
+		background-color: #3b82f6;
+		color: white;
+		border: none;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+		cursor: pointer;
+		z-index: 9999;
+		display: flex; align-items: center; justify-content: center;
+		transition: background-color 0.15s, transform 0.1s;
+	}
+	#llm-meta-widget-toggle:hover { background-color: #2563eb; }
+	#llm-meta-widget-toggle:active { transform: scale(0.96); }
+	#llm-meta-widget-toggle.lmw-hidden { display: none; }
+	#llm-meta-widget-toggle svg { display: block; }
+
+	/* Header hide/close: a subtle "−" button that collapses to the toggle
+	 * bubble. Sits between the "clear" button and title. */
+	#llm-meta-widget-chat .lmw-hide {
+		background: none; border: none;
+		color: #6b7280;
+		font: inherit; font-size: 18px; line-height: 1;
+		cursor: pointer;
+		padding: 0 8px;
+		transition: color 0.15s;
+	}
+	#llm-meta-widget-chat .lmw-hide:hover { color: #1f2937; }
+	#llm-meta-widget-chat .lmw-header {
+		display: flex; justify-content: space-between; align-items: center;
+		gap: 8px;
+		padding-bottom: 8px; margin-bottom: 8px;
+		border-bottom: 2px solid #e5e7eb;
+	}
+	#llm-meta-widget-chat .lmw-header-right { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+
+	/* Level-1 pickers row — matches chat.aibranch.org's input-container
+	 * convention (attach / model / tools / settings in a horizontal row
+	 * below the textarea). We only render model + tools for now. Uses
+	 * relative positioning so the tools <details> panel can drop down
+	 * as a floating overlay instead of pushing the input area around. */
+	#llm-meta-widget-chat .lmw-input-controls {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin-top: 6px;
+		position: relative;
+		min-height: 26px;
+	}
+	#llm-meta-widget-chat .lmw-title { font-weight: 600; color: #1f2937; }
+
+	/* Level-1 model picker — compact <select> next to the title.
+	 * Populated by JS on widget open from GET /api/llms (anon path
+	 * returns Ollama-only). Hidden entirely if enable_model_picker
+	 * is false at the helper call site. */
+	#llm-meta-widget-chat .lmw-model-picker {
+		font: inherit; font-size: 12px;
+		padding: 3px 6px;
+		border: 1px solid #d1d5db;
+		border-radius: 4px;
+		background: #f9fafb;
+		color: #374151;
+		cursor: pointer;
+		max-width: 12em;
+		text-overflow: ellipsis;
+	}
+	#llm-meta-widget-chat .lmw-model-picker:focus {
+		outline: none;
+		border-color: #3b82f6;
+		box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+	}
+
+	/* Level-1 tools picker — inline chip in the input-controls row (same
+	 * convention as chat.aibranch.org). The tools list drops down as a
+	 * floating overlay above the input, so opening the panel doesn't
+	 * push the textarea around. Populated by JS on widget open from
+	 * GET /api/mcp_servers (anon path returns public_to_anonymous MCP
+	 * servers with their tools inline). One checkbox per SERVER —
+	 * toggling enables/disables ALL of its tools. */
+	#llm-meta-widget-chat .lmw-tools-picker {
+		position: relative;   /* anchor for the absolutely-positioned list */
+	}
+	#llm-meta-widget-chat .lmw-tools-picker > summary {
+		list-style: none;
+		cursor: pointer;
+		padding: 3px 8px;
+		font-size: 12px;
+		color: #374151;
+		background: #f9fafb;
+		border: 1px solid #d1d5db;
+		border-radius: 4px;
+		display: inline-flex; align-items: center; gap: 6px;
+	}
+	#llm-meta-widget-chat .lmw-tools-picker > summary:hover { background: #f3f4f6; }
+	#llm-meta-widget-chat .lmw-tools-picker > summary::-webkit-details-marker { display: none; }
+	#llm-meta-widget-chat .lmw-tools-picker[open] > summary {
+		background: #eff6ff;
+		border-color: #93c5fd;
+	}
+	#llm-meta-widget-chat .lmw-tools-count {
+		display: inline-block;
+		background: #0ea5e9;
+		color: #fff;
+		font-size: 10px;
+		padding: 0 5px;
+		border-radius: 8px;
+		min-width: 14px;
+		text-align: center;
+	}
+	#llm-meta-widget-chat .lmw-tools-count.lmw-tools-count-zero {
+		background: #d1d5db;
+		color: #6b7280;
+	}
+	/* Floating dropdown panel — sits above the input area when open so
+	 * expanding never shifts the textarea. Bottom-anchored so it opens
+	 * UPWARD (natural direction since we're at the panel's bottom). */
+	#llm-meta-widget-chat .lmw-tools-list {
+		position: absolute;
+		bottom: calc(100% + 4px);
+		left: 0;
+		min-width: 220px;
+		max-height: 12em;
+		overflow-y: auto;
+		background: #ffffff;
+		border: 1px solid #d1d5db;
+		border-radius: 6px;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.10);
+		padding: 4px 0;
+		z-index: 10;
+	}
+	#llm-meta-widget-chat .lmw-tools-item {
+		display: flex; align-items: center; gap: 6px;
+		padding: 4px 10px;
+		font-size: 12px;
+		color: #374151;
+		cursor: pointer;
+	}
+	#llm-meta-widget-chat .lmw-tools-item:hover { background: #eff6ff; }
+	#llm-meta-widget-chat .lmw-tools-item input[type="checkbox"] { margin: 0; }
+	#llm-meta-widget-chat .lmw-tools-empty {
+		padding: 6px 10px;
+		font-size: 12px;
+		color: #94a3b8;
+		font-style: italic;
+	}
+	/* Two-level tool selection — mirrors chat.aibranch.org's tool_selector.
+	 * Server row (bulk checkbox + name + count + caret) is clickable to
+	 * expand its children. Individual tool rows are indented one level. */
+	#llm-meta-widget-chat .lmw-tools-server + .lmw-tools-server {
+		border-top: 1px solid #f1f5f9;
+	}
+	#llm-meta-widget-chat .lmw-tools-server-row {
+		display: flex; align-items: center; gap: 6px;
+		padding: 4px 10px;
+		font-size: 12px;
+		font-weight: 500;
+		color: #1f2937;
+		cursor: pointer;
+	}
+	#llm-meta-widget-chat .lmw-tools-server-row:hover { background: #eff6ff; }
+	#llm-meta-widget-chat .lmw-tools-server-name  { flex: 1; }
+	#llm-meta-widget-chat .lmw-tools-server-caret {
+		color: #94a3b8;
+		font-size: 10px;
+		line-height: 1;
+		flex-shrink: 0;
+	}
+	#llm-meta-widget-chat .lmw-tools-item-child {
+		padding-left: 26px;  /* align tool checkboxes past the server bulk checkbox */
+		font-size: 12px;
+		color: #4b5563;
+	}
+	#llm-meta-widget-chat .lmw-clear {
+		background: #ef4444; color: white; border: none;
+		padding: 4px 10px; border-radius: 6px; cursor: pointer;
+		font: inherit; font-size: 12px;
+		transition: background-color 0.15s;
+	}
+	#llm-meta-widget-chat .lmw-clear:hover { background: #dc2626; }
+
+	#llm-meta-widget-chat .lmw-messages {
+		flex: 1; overflow-y: auto;
+		padding: 10px;
+		background-color: #f9fafb;
+		border-radius: 8px;
+		margin-bottom: 8px;
+		min-height: 6em;
+		/* No max-height — messages grows with the widget (which the user
+		 * can drag to any size). A hard cap here would leave an ugly gap
+		 * between the messages area and the input on tall widget sizes. */
+	}
+	#llm-meta-widget-chat .lmw-messages::-webkit-scrollbar { width: 8px; }
+	#llm-meta-widget-chat .lmw-messages::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 4px; }
+	#llm-meta-widget-chat .lmw-messages::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+	#llm-meta-widget-chat .lmw-messages::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+	/* Input area — mirrors llm_meta_chat's .chat-input-container +
+	 * .chat-input + .send-button so it reads as the same UI. Multi-line
+	 * textarea with an absolutely-positioned paper-plane send button
+	 * (SVG inlined so no external icon-font dep). */
+	#llm-meta-widget-chat .lmw-input-container {
+		background-color: white;
+		border: 2px solid #e5e7eb;
+		border-radius: 8px;
+		padding: 8px;
+	}
+	#llm-meta-widget-chat .message-content details > summary {
+		cursor: pointer;
+		font-weight: 600;
+	}
+	#llm-meta-widget-chat .lmw-sent-text {
+		margin-top: 6px;
+		font-size: 12px;
+		opacity: 0.8;
+		white-space: pre-wrap;
+	}
+
+	/* Opening state: greeting + the offers themselves. Shown until the first
+	 * real turn, and again after Clear. */
+	#llm-meta-widget-chat .lmw-welcome { padding: 4px 2px 2px; }
+	#llm-meta-widget-chat .lmw-welcome-hello {
+		margin: 0 0 12px;
+		font-size: 14px;
+		line-height: 1.5;
+		color: #374151;
+	}
+	#llm-meta-widget-chat .lmw-welcome-card {
+		background-color: #f9fafb;
+		border: 1px solid #e5e7eb;
+		border-radius: 8px;
+		padding: 10px 12px;
+		margin-bottom: 8px;
+	}
+	#llm-meta-widget-chat .lmw-welcome-start {
+		background-color: #eff6ff;
+		color: #1d4ed8;
+		border: 1px solid #bfdbfe;
+		border-radius: 999px;
+		padding: 4px 12px;
+		font-size: 13px;
+		font-family: inherit;
+		cursor: pointer;
+	}
+	#llm-meta-widget-chat .lmw-welcome-start:hover { background-color: #dbeafe; }
+	#llm-meta-widget-chat .lmw-welcome-why {
+		margin: 8px 0 0;
+		font-size: 13px;
+		line-height: 1.45;
+		color: #4b5563;
+	}
+	#llm-meta-widget-chat .lmw-welcome-slots {
+		margin: 8px 0 0;
+		padding-left: 16px;
+		font-size: 12px;
+		color: #6b7280;
+	}
+	#llm-meta-widget-chat .lmw-welcome-slots li { margin-bottom: 2px; }
+	#llm-meta-widget-chat .lmw-welcome-slots li.filled { color: #047857; }
+
+	/* Server-offered prompt templates. The row is display:none in markup and
+	 * gets its display back only when a prompt actually exists, so the inline
+	 * style and this rule have to agree on "flex". */
+	#llm-meta-widget-chat .lmw-prompts {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		margin-bottom: 8px;
+	}
+	#llm-meta-widget-chat .lmw-prompt {
+		background-color: #eff6ff;
+		color: #1d4ed8;
+		border: 1px solid #bfdbfe;
+		border-radius: 999px;
+		padding: 4px 12px;
+		font-size: 12px;
+		font-family: inherit;
+		cursor: pointer;
+		transition: background-color 0.2s, border-color 0.2s;
+	}
+	#llm-meta-widget-chat .lmw-prompt:hover:not(:disabled) {
+		background-color: #dbeafe;
+		border-color: #93c5fd;
+	}
+	#llm-meta-widget-chat .lmw-prompt:disabled { opacity: 0.5; cursor: default; }
+	#llm-meta-widget-chat .lmw-form { display: flex; flex-direction: column; gap: 8px; }
+	#llm-meta-widget-chat .lmw-input-wrapper { position: relative; flex: 1; }
+	#llm-meta-widget-chat .lmw-input {
+		width: 100%;
+		padding: 10px 48px 10px 10px;
+		border: 1px solid #d1d5db;
+		border-radius: 6px;
+		font-size: 14px;
+		font-family: inherit;
+		resize: vertical;
+		min-height: 44px;
+		box-sizing: border-box;
+		transition: border-color 0.2s, box-shadow 0.2s;
+	}
+	#llm-meta-widget-chat .lmw-input:focus {
+		outline: none;
+		border-color: #3b82f6;
+		box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+	}
+	#llm-meta-widget-chat .lmw-send {
+		position: absolute;
+		bottom: 6px;
+		right: 6px;
+		background-color: #3b82f6;
+		color: white;
+		border: none;
+		width: 32px;
+		height: 32px;
+		padding: 0;
+		border-radius: 6px;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		transition: background-color 0.15s, opacity 0.15s;
+	}
+	#llm-meta-widget-chat .lmw-send:hover { background-color: #2563eb; }
+	#llm-meta-widget-chat .lmw-send:disabled { opacity: 0.5; cursor: not-allowed; }
+	#llm-meta-widget-chat .lmw-send svg { display: block; }

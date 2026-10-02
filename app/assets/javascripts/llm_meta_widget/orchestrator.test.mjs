@@ -1265,25 +1265,39 @@ test("promptButtonProps falls back to the prompt name", () => {
 
 
 
-// ---- the panel's import list ---------------------------------------------
+// ---- the element's import list -------------------------------------------
 
-test("every name the panel imports is exported by the orchestrator", () => {
-  // The panel is ERB, so nothing here imports it and a stale name in its
-  // import list is a module-level SyntaxError that kills the whole widget at
-  // boot — no buttons, no discovery, no chat. Twice now that has only shown
-  // up in a browser run minutes later.
+test("every name the element imports is exported by the orchestrator", () => {
+  // A stale name in that import list is a module-level SyntaxError that kills
+  // the whole widget at boot — no buttons, no discovery, no chat. Twice that
+  // only showed up in a browser run minutes later, which is why this is here.
+  //
+  // The panel's script used to live in an ERB template, so this read the ERB;
+  // it is element.js now. The check is the same and still cheap: the bundler
+  // would also catch it, but not before `npm run build` is actually run.
   const dir = fileURLToPath(new URL(".", import.meta.url))
-  const panel = readFileSync(dir + "../../../views/llm_meta_widget/_chat_panel.html.erb", "utf8")
+  const element = readFileSync(dir + "element.js", "utf8")
   const mod = readFileSync(dir + "orchestrator.js", "utf8")
 
-  const block = panel.match(/import \{([\s\S]*?)\} from "<%= orchestrator_path %>"/)
-  assert.ok(block, "the panel should import from the orchestrator")
+  const block = element.match(/import \{([\s\S]*?)\} from "\.\/orchestrator\.js"/)
+  assert.ok(block, "element.js should import from ./orchestrator.js")
   const imported = block[1].split(",").map((n) => n.trim()).filter(Boolean)
   const exported = new Set([ ...mod.matchAll(/export (?:async function|function|const) (\w+)/g) ].map((m) => m[1]))
 
   assert.ok(imported.length > 0)
   const missing = imported.filter((n) => !exported.has(n))
-  assert.deepEqual(missing, [], `panel imports names the module does not export: ${missing.join(", ")}`)
+  assert.deepEqual(missing, [], `element imports names the module does not export: ${missing.join(", ")}`)
+})
+
+test("the element reads its config through config.js rather than inlining it", () => {
+  // config.js exists so the attribute conventions can be unit-tested; if the
+  // element stopped using it, config.test.mjs would pass while testing nothing.
+  const dir = fileURLToPath(new URL(".", import.meta.url))
+  const element = readFileSync(dir + "element.js", "utf8")
+  assert.match(element, /import \{ readConfig \} from "\.\/config\.js"/)
+  assert.match(element, /readConfig\(this\)/)
+  assert.doesNotMatch(element, /export function readConfig/,
+                      "readConfig should live in config.js, not be redefined here")
 })
 
 test("promptArgumentSummary shows which slots the page can already fill", () => {
