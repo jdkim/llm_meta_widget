@@ -1,7 +1,36 @@
 # Design note — distributing the widget as a custom element
 
-**Status:** proposal, not implemented. Written 2026-10-03.
+**Status:** implemented 2026-10-03 (same day), except for npm/CDN
+publication, which needs an npm account. Written as a proposal; kept as the
+record of why the shape is what it is.
 **Problem owner:** adopters whose host application is not Rails.
+
+**What landed, and what did not**
+
+Landed: `element.js` (the panel, moved), `config.js` (attribute reading, with
+the first unit tests the panel logic has ever had), `panel.css` (extracted),
+`script/build.mjs` (esbuild bundle plus a staleness check that `npm test`
+runs), a route and controller action serving the bundle, and the partial
+reduced to the element tag. The gem keeps its helper signature, so
+PubDictionaries needs no edit.
+
+Not landed: the npm package and the CDN URL, so the two-line integration in
+the example below currently means "load the file the gem serves, or
+self-host it". Everything else about it is true today.
+
+Verified on a plain HTML page served by `python3 -m http.server`, with no
+Rails anywhere: the element upgrades and builds its own DOM, injects its own
+styles (the host serves no stylesheet), keeps the floating `position: fixed`
+geometry, reads its configuration from attributes, discovers hub-registered
+tools cross-origin, and completes a real streamed turn against
+`qwen3-8-27b-fast` that answers from the host page's own `aiState` reader.
+
+Two findings worth keeping. The model picker reassigns `MODEL`
+(`MODEL = modelPicker.value`), so the sixteen configuration values are bound
+with `var` rather than destructured as `const` — the latter throws the moment
+a visitor changes model, and nothing before the browser would catch it. And
+the 985 lines of panel logic contain no ERB at all, which is why they moved
+verbatim rather than being rewritten.
 
 ## Why
 
@@ -107,7 +136,7 @@ contract for page-embedded actions (Class 3), and a host declaring them on
 stays a page-level `<script type="application/json">`. `sessionStorage`
 transcript persistence is unaffected.
 
-## Decision: no shadow DOM in v1
+## Decision: no shadow DOM in v1 (implemented as decided)
 
 Shadow DOM is the reflex choice and would buy style isolation. Reject it for the
 first version:

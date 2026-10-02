@@ -79,6 +79,57 @@ Once that works, the widget can converse but cannot *do* anything. To let the
 LLM act on your page or call your own services, declare tools using any of the
 **three tool classes** below.
 
+## Any host: the custom element
+
+The widget is a custom element in a single self-contained ES module, so a host
+that is not Rails needs no gem, no template engine and no asset pipeline — two
+lines of HTML:
+
+```html
+<script type="module" src="/llm_meta_widget_assets/llm-meta-widget.js"></script>
+<llm-meta-widget llm-url="https://your-hub.example"
+                 model="qwen3-8-27b-fast"
+                 greeting="Hi — ask me anything about this page."></llm-meta-widget>
+```
+
+Serve that one file from anywhere you like: the gem serves it at the path above,
+and a non-Rails host can copy it out of the gem (or off a release) and serve it
+as a static asset. Nothing else is needed — the stylesheets and the markdown
+renderer are bundled in, and the element injects its own styles.
+
+The two Rails-specific pieces are gone from the host's side of the contract.
+What is NOT gone is the host page's own contract, because those pieces belong to
+the host: the `#ai-actions` JSON block, `window.aiState` and `window.aiActions`
+are declared exactly as they are under Rails (see the three tool classes below).
+
+**Attributes** map one-to-one onto the helper's keyword options. Three are not
+obvious and are the ones that bite:
+
+| attribute | notes |
+|---|---|
+| `llm-url`, `model` | required |
+| `tool-hub-url` | omit for no Class 1; `""` is the same as omitting |
+| `llm-provider` | `llm_meta_server` (default) or `ollama` |
+| `api-key-uuid`, `greeting`, `max-rounds` | as the helper options |
+| `actions-schema-id`, `state-global`, `actions-global`, `remote-tools-schema-id` | as the helper options |
+| `models`, `hub-tools` | comma-separated. Omitted **or empty** means no allowlist — an allowlist permitting nothing is never what anyone meant |
+| `enable-model-picker`, `enable-tool-picker` | **value attributes, not boolean attributes.** They default to true, so presence cannot mean true. Disable with `enable-tool-picker="false"`; any other value is true |
+| `well-known-urls` | **tri-state**, because an attribute cannot express nil-versus-empty: omitted = auto-discover same-origin `/.well-known/mcp.json`; `""` = discovery off; `"a,b"` = fetch those |
+
+That last one is the quiet failure to watch for: expecting discovery off and
+getting a same-origin fetch looks like nothing at all, except a 404 in the
+console.
+
+One widget per page. The panel uses fixed element ids, so a second
+`<llm-meta-widget>` is ignored with a console warning rather than fighting the
+first over every lookup.
+
+**Building it.** `npm run build` bundles `element.js`, `config.js`,
+`orchestrator.js`, the vendored `marked` and both stylesheets with esbuild. The
+result is committed and shipped in the gem, because a gem cannot run a build
+step on install — and `npm test` fails if the committed bundle has drifted from
+its sources.
+
 ## Three tool classes
 
 The widget classifies every tool_call the LLM emits by name and dispatches to one of three execution paths. Each class has a different declaration, different visibility to the LLM, and different execution semantics.
@@ -222,7 +273,7 @@ To lock the widget to the fixed `model:` prop and disable Class-1 tools entirely
 | `tool_hub_url:` | `nil` | An llm_meta_server whose registered MCP tools to offer. Absent = none (page actions and your own `.well-known` MCP are unaffected) |
 | `model:` | required | Initial model (also the fallback when picker is disabled) |
 | `api_key_uuid:` | `"ollama-local"` | Hub API-key uuid to invoke |
-| `orchestrator_path:` | `"/llm_meta_widget_assets/orchestrator.js"` | Served by the gem's engine; rarely overridden |
+| `element_path:` | `"/llm_meta_widget_assets/llm-meta-widget.js"` | The bundled element the page loads. Served by the gem's engine; override to load it from elsewhere |
 | `actions_schema_id:` | `"ai-actions"` | DOM id of the Class-3 schema block |
 | `state_global:` | `"aiState"` | Global window object holding Class-3 state readers |
 | `actions_global:` | `"aiActions"` | Global window object holding Class-3 implementations |
