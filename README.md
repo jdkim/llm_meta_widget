@@ -79,6 +79,30 @@ Once that works, the widget can converse but cannot *do* anything. To let the
 LLM act on your page or call your own services, declare tools using any of the
 **three tool classes** below.
 
+### Local hub with anonymous TogoMCP
+
+```erb
+<%= llm_meta_widget(llm_url: "http://localhost:3000",
+                    tool_hub_url: "http://localhost:3000",
+                    model: "glm-4-7-flash",
+                    models: ["glm-4-7-flash"],
+                    hub_tools: ["TogoMCP"],
+                    generation_settings: { options: { num_ctx: 65536, num_predict: 4096 } }) %>
+```
+
+Use the hub catalog's `available_models[].value` for `model` (`glm-4-7-flash`),
+not the display name (`glm-4.7-flash`). Serve the host page from an origin
+allowed by the hub's CORS configuration, such as `http://127.0.0.1:3001`.
+In the widget, expand **Tools → TogoMCP** and select **TogoMCP_Usage_Guide**.
+The server must mark TogoMCP `public_to_anonymous` and allow anonymous callers
+on the MCP execution endpoint as well as discovery and `single_llm_calls`.
+The guide is large; `generation_settings` explicitly reserves context for the
+original request, full tool result, and answer. Settings are sent on every
+LLM round and merged over the hub model defaults. Size this for your model
+and available memory.
+The browser executes the emitted call through `/api/mcp_tools/:id/call` and
+sends its result back in the next LLM turn. See [the local E2E test](test/e2e/README.md#local-anonymous-togomcp-round-trip).
+
 ## Three tool classes
 
 The widget classifies every tool_call the LLM emits by name and dispatches to one of three execution paths. Each class has a different declaration, different visibility to the LLM, and different execution semantics.
@@ -178,7 +202,7 @@ Declared out-of-band on the meta-server (via the hub's admin UI or `/user/:id/mc
 
 **What the LLM sees.** Only tools from servers the visitor has **enabled via the tool picker** (see "Level-1 pickers" below). Nothing is auto-selected — the visitor opts in per session.
 
-**When the tool_call fires.** Synchronously during the turn — widget POSTs to the hub's `/api/llm_api_keys/:uuid/models/:name/single_llm_calls` endpoint with `tool_ids: [...]`; the hub proxies to each MCP server and streams results back through SSE.
+**When the tool_call fires.** The widget POSTs its arguments to the hub's `/api/mcp_tools/:id/call` proxy, then appends the assistant tool call and returned tool result to the next `single_llm_calls` request. `tool_ids` on the LLM request declares available tools; execution is orchestrated by the browser.
 
 **Error path.** Hub-side errors (rate limit, timeout, MCP server unavailable, upstream failure) arrive as SSE `event: error` frames with typed codes (`mcp_unavailable`, `timeout`, `rate_limit`, …); the widget surfaces them in the message bubble with a per-code prefix.
 
