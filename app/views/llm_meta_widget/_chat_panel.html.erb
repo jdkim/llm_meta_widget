@@ -477,6 +477,7 @@
 	var STATE_GLOBAL           = <%= state_global.to_json.html_safe %>;
 	var ACTIONS_GLOBAL         = <%= actions_global.to_json.html_safe %>;
 	var REMOTE_TOOLS_SCHEMA_ID = <%= remote_tools_schema_id.to_json.html_safe %>;
+	var GENERATION_SETTINGS    = <%= (local_assigns[:generation_settings] || {}).to_json.html_safe %>;
 	var MAX_ROUNDS             = <%= max_rounds.to_json.html_safe %>;
 	var WELL_KNOWN_URLS        = <%= raw(well_known_urls.nil? ? "null" : well_known_urls.to_json) %>;
 	var LLM_PROVIDER           = <%= llm_provider.to_json.html_safe %>;
@@ -1374,6 +1375,7 @@
 				baseUrl:       LLM_BASE,
 				toolHubUrl:    TOOL_HUB_BASE,
 				apiKeyUuid:    API_KEY_UUID,
+				generationSettings: GENERATION_SETTINGS,
 				modelName:     MODEL,
 				messages:      messages,
 				localTools:    localTools,

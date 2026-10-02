@@ -44,6 +44,7 @@ module LlmMetaWidget
       # explicit array → fetch those URLs; empty array → disable entirely.
       well_known_urls:         nil,
       max_rounds:              3,
+      generation_settings:     {}, # per-request settings, merged over hub model defaults
       # Level-1 pickers — enable visitor-driven selection of model and
       # hub-registered anon-public MCP tools. See README for the level
       # taxonomy (0 = independent, 1 = hub anon, 2 = hub signed-in).

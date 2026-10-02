@@ -59,3 +59,45 @@ same widget but needs its own readers and fixtures.
 The Selenium profile directory is created beside the script rather than in
 `/tmp`, because snap-confined Chromium cannot write there and fails with a
 silent 120-second timeout.
+
+## Local anonymous TogoMCP round trip
+
+Start `llm_meta_server` on port 3000 with the Ollama model available and
+TogoMCP active, public, and `public_to_anonymous`. Then run:
+
+```sh
+bundle exec ruby test/e2e/remote_tool_test.rb
+```
+
+This renders the actual helper/partial, serves it on `127.0.0.1:3001` (already
+allowed by the hub's development CORS policy), selects only
+`TogoMCP_Usage_Guide`, and sends a real request. It asserts two successful
+`single_llm_calls`, one successful `/api/mcp_tools/:id/call`, no Authorization
+header, and the returned tool result in the next LLM request. Both LLM turns
+must carry `options.num_ctx=65536`; the fixture also sets `num_predict=4096`.
+The final turn must contain an answer and no further tool calls. Nothing is
+mocked.
+
+Defaults: `HUB_URL=http://localhost:3000`, `MODEL=glm-4-7-flash`,
+`WIDGET_PORT=3001`, `E2E_TIMEOUT=600` seconds (the guide is large).
+`MODEL` is the catalog **value**, not the display/provider name `glm-4.7-flash`. The default API-key selector is `ollama-local`; it is
+not a credential. Both `llm_url` and `tool_hub_url` are set to the local hub.
+
+`E2E_OUTPUT_DIR` overrides the output directory (default
+`tmp/remote-tool-e2e`). It contains `wire.json`, `summary.json`, and a screenshot.
+Failures exit nonzero. The wire log includes full prompts and tool responses.
+
+If headless Chrome cannot start, use `SERVE_ONLY=1` with the same command.
+Open `http://127.0.0.1:3001/index.html`, open the assistant, expand Tools and
+TogoMCP, check only `TogoMCP_Usage_Guide`, and ask it to call the guide once
+with empty arguments and summarize it. The fixture records browser traffic
+in `wire.json` automatically. Validate the captured exchange with:
+
+```sh
+ruby test/e2e/remote_tool_wire.rb tmp/remote-tool-e2e/wire.json
+```
+
+This validator works for either browser path. Ollama can emit a null call ID;
+the widget preserves the assistant call and uses an empty `tool_call_id` plus
+the tool name for its result. The validator checks that representation too.
+Stop the fixture with Ctrl-C when finished.
