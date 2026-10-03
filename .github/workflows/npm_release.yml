@@ -27,12 +27,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Deliberately NO registry-url. With it, setup-node writes
+      # _authToken=${NODE_AUTH_TOKEN} into a step .npmrc and exports the literal
+      # placeholder NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX when no token is
+      # supplied. npm then sends that garbage credential instead of performing the
+      # OIDC exchange, and the registry answers E404 "could not be found or you do
+      # not have permission" — which reads like a missing package, not an auth
+      # failure. Trusted publishing wants no credential configured at all.
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           # Trusted publishing requires Node >= 22.14.0.
           node-version: "22"
-          registry-url: "https://registry.npmjs.org"
 
       # Node 22 bundles npm 10.x, but trusted publishing needs >= 11.5.1.
       # Without this the publish fails with an auth error that looks like a
@@ -80,6 +86,22 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      # Guards the trap above: if anything has configured a registry credential,
+      # npm would use it instead of OIDC and fail with a misleading 404. Better to
+      # say so here than to decode that 404 again.
+      - name: Assert no credential is configured, so OIDC is the only auth path
+        run: |
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::NODE_AUTH_TOKEN is set ($NODE_AUTH_TOKEN) — it will pre-empt OIDC"
+            exit 1
+          fi
+          token_line=$(npm config get //registry.npmjs.org/:_authToken)
+          echo "configured authToken: ${token_line}"
+          case "$token_line" in
+            ""|null|undefined) echo "no credential configured — OIDC will be used" ;;
+            *) echo "::error::a registry authToken is configured; it will pre-empt OIDC"; exit 1 ;;
+          esac
 
       # No --provenance flag: trusted publishing attaches provenance
       # automatically. No token either — that is the point.
