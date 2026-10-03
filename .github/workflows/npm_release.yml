@@ -96,12 +96,15 @@ jobs:
             echo "::error::NODE_AUTH_TOKEN is set ($NODE_AUTH_TOKEN) — it will pre-empt OIDC"
             exit 1
           fi
-          token_line=$(npm config get //registry.npmjs.org/:_authToken)
-          echo "configured authToken: ${token_line}"
-          case "$token_line" in
-            ""|null|undefined) echo "no credential configured — OIDC will be used" ;;
-            *) echo "::error::a registry authToken is configured; it will pre-empt OIDC"; exit 1 ;;
-          esac
+          # Not `npm config get`: npm refuses to read _authToken back, calling it
+          # a protected option, and the command's own failure then trips set -e.
+          for f in "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}" "$PWD/.npmrc"; do
+            if [ -f "$f" ] && grep -q '_authToken' "$f"; then
+              echo "::error::$f configures an authToken; it will pre-empt OIDC"
+              exit 1
+            fi
+          done
+          echo "no credential configured — OIDC is the only auth path"
 
       # No --provenance flag: trusted publishing attaches provenance
       # automatically. No token either — that is the point.
