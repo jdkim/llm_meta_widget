@@ -50,8 +50,6 @@ const MARKUP = `
 	</div>
 	<div class="lmw-messages"></div>
 	<div class="lmw-input-container">
-		    host MCP server actually offers one, so a tools-only server leaves
-		    the widget exactly as it was. %>
 		<div class="lmw-prompts" style="display:none"></div>
 		<form class="lmw-form">
 			<div class="lmw-input-wrapper">
@@ -62,25 +60,19 @@ const MARKUP = `
 					</svg>
 				</button>
 			</div>
-			<% if enable_model_picker || enable_tool_picker %>
-				<div class="lmw-input-controls">
-					<% if enable_model_picker %>
-						<select class="lmw-model-picker" title="Select model" aria-label="Select model" style="display:none">
-						</select>
-					<% end %>
-					<% if enable_tool_picker %>
-						<details class="lmw-tools-picker">
-							<summary>
-								🔧 Tools
-								<span class="lmw-tools-count lmw-tools-count-zero">0</span>
-							</summary>
-							<div class="lmw-tools-list">
-								<div class="lmw-tools-empty">Loading…</div>
-							</div>
-						</details>
-					<% end %>
-				</div>
-			<% end %>
+			<div class="lmw-input-controls">
+				<select class="lmw-model-picker" title="Select model" aria-label="Select model" style="display:none">
+				</select>
+				<details class="lmw-tools-picker">
+					<summary>
+						🔧 Tools
+						<span class="lmw-tools-count lmw-tools-count-zero">0</span>
+					</summary>
+					<div class="lmw-tools-list">
+						<div class="lmw-tools-empty">Loading…</div>
+					</div>
+				</details>
+			</div>
 		</form>
 	</div>
 </div>
@@ -126,6 +118,11 @@ if (typeof customElements !== "undefined" && !customElements.get("llm-meta-widge
 // Everything below is the panel's original logic, moved verbatim from the ERB
 // template. The only change is the sixteen bindings above it, which the
 // template used to inject.
+// Removes a node if it is there. Used to honour the picker flags: see boot().
+function dropNode(node) {
+	if (node && node.parentNode) node.parentNode.removeChild(node);
+}
+
 function boot(cfg) {
   var LLM_BASE               = cfg.LLM_BASE;
   var TOOL_HUB_BASE          = cfg.TOOL_HUB_BASE;
@@ -151,6 +148,14 @@ function boot(cfg) {
   	var inputEl      = root.querySelector(".lmw-input");
   	var clearBtn     = root.querySelector(".lmw-clear");
   	var hideBtn      = root.querySelector(".lmw-hide");
+  	// The ERB partial omitted these nodes entirely when their flag was false.
+  	// One static template cannot express that, so prune instead — otherwise a
+  	// disabled Tools picker still renders, and the lookups below never return
+  	// the null the rest of boot() is written against.
+  	if (!ENABLE_MODEL_PICKER) dropNode(root.querySelector(".lmw-model-picker"));
+  	if (!ENABLE_TOOL_PICKER) dropNode(root.querySelector(".lmw-tools-picker"));
+  	if (!ENABLE_MODEL_PICKER && !ENABLE_TOOL_PICKER) dropNode(root.querySelector(".lmw-input-controls"));
+
   	var modelPicker  = root.querySelector(".lmw-model-picker");   // null when disabled
   	var toolsPicker  = root.querySelector(".lmw-tools-picker");   // null when disabled
   	var toolsListEl  = root.querySelector(".lmw-tools-list");     // null when disabled

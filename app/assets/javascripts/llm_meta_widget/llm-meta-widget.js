@@ -3564,8 +3564,6 @@ var MARKUP = `
 	</div>
 	<div class="lmw-messages"></div>
 	<div class="lmw-input-container">
-		    host MCP server actually offers one, so a tools-only server leaves
-		    the widget exactly as it was. %>
 		<div class="lmw-prompts" style="display:none"></div>
 		<form class="lmw-form">
 			<div class="lmw-input-wrapper">
@@ -3576,25 +3574,19 @@ var MARKUP = `
 					</svg>
 				</button>
 			</div>
-			<% if enable_model_picker || enable_tool_picker %>
-				<div class="lmw-input-controls">
-					<% if enable_model_picker %>
-						<select class="lmw-model-picker" title="Select model" aria-label="Select model" style="display:none">
-						</select>
-					<% end %>
-					<% if enable_tool_picker %>
-						<details class="lmw-tools-picker">
-							<summary>
-								\u{1F527} Tools
-								<span class="lmw-tools-count lmw-tools-count-zero">0</span>
-							</summary>
-							<div class="lmw-tools-list">
-								<div class="lmw-tools-empty">Loading\u2026</div>
-							</div>
-						</details>
-					<% end %>
-				</div>
-			<% end %>
+			<div class="lmw-input-controls">
+				<select class="lmw-model-picker" title="Select model" aria-label="Select model" style="display:none">
+				</select>
+				<details class="lmw-tools-picker">
+					<summary>
+						\u{1F527} Tools
+						<span class="lmw-tools-count lmw-tools-count-zero">0</span>
+					</summary>
+					<div class="lmw-tools-list">
+						<div class="lmw-tools-empty">Loading\u2026</div>
+					</div>
+				</details>
+			</div>
 		</form>
 	</div>
 </div>
@@ -3628,6 +3620,9 @@ var LlmMetaWidgetElement = class extends HTMLElement {
 if (typeof customElements !== "undefined" && !customElements.get("llm-meta-widget")) {
   customElements.define("llm-meta-widget", LlmMetaWidgetElement);
 }
+function dropNode(node) {
+  if (node && node.parentNode) node.parentNode.removeChild(node);
+}
 function boot(cfg) {
   var LLM_BASE = cfg.LLM_BASE;
   var TOOL_HUB_BASE = cfg.TOOL_HUB_BASE;
@@ -3652,6 +3647,9 @@ function boot(cfg) {
   var inputEl = root.querySelector(".lmw-input");
   var clearBtn = root.querySelector(".lmw-clear");
   var hideBtn = root.querySelector(".lmw-hide");
+  if (!ENABLE_MODEL_PICKER) dropNode(root.querySelector(".lmw-model-picker"));
+  if (!ENABLE_TOOL_PICKER) dropNode(root.querySelector(".lmw-tools-picker"));
+  if (!ENABLE_MODEL_PICKER && !ENABLE_TOOL_PICKER) dropNode(root.querySelector(".lmw-input-controls"));
   var modelPicker = root.querySelector(".lmw-model-picker");
   var toolsPicker = root.querySelector(".lmw-tools-picker");
   var toolsListEl = root.querySelector(".lmw-tools-list");

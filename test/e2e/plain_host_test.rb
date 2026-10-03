@@ -122,9 +122,14 @@ begin
 
   r[:config] = d.execute_script(<<~JS)
     const root = document.getElementById("llm-meta-widget-chat");
+    // The markup is a JS template literal lifted out of an ERB partial, so any
+    // leftover <% %> is inert text that the user simply SEES. That shipped in
+    // 0.7.0/0.7.1 and was spotted by eye, so look at the rendered panel here.
+    const leaked = ((root.innerText || "").match(/<%|%>/g) || []);
     return { greeting: (root.querySelector(".lmw-messages")||{}).innerText.includes("no Rails"),
              model_picker: !!root.querySelector(".lmw-model-picker"),
-             tools_picker: !!root.querySelector(".lmw-tools-picker") };
+             tools_picker: !!root.querySelector(".lmw-tools-picker"),
+             template_syntax_visible: leaked };
   JS
 
   # a real streamed turn, answered from the host page's own aiState reader
