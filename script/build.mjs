@@ -30,10 +30,15 @@ const result = await build({
 })
 
 const fresh = result.outputFiles[0].text
+// Byte length, not the string's .length: `fresh` is a string, so .length counts
+// UTF-16 code units and under-reports every non-ASCII character in the bundle (the
+// em dashes in the UI strings alone cost 18). writeFileSync encodes it as UTF-8, so
+// this is the size the file actually has on disk.
+const bytes = Buffer.byteLength(fresh)
 
 if (!check) {
   writeFileSync(OUT, fresh)
-  console.log(`built ${OUT} — ${fresh.length} bytes`)
+  console.log(`built ${OUT} — ${bytes} bytes`)
   process.exit(0)
 }
 
@@ -52,4 +57,4 @@ if (committed !== fresh) {
   )
   process.exit(1)
 }
-console.log(`${OUT} is up to date (${fresh.length} bytes)`)
+console.log(`${OUT} is up to date (${bytes} bytes)`)
