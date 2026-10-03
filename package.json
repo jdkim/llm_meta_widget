@@ -1,6 +1,6 @@
 {
   "name": "@aibranch/llm-meta-widget",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "//version": "Must stay in step with lib/llm_meta_widget/version.rb. Two independently versioned copies of the same client is the drift docs/custom-element-distribution.md warns about: bump both, release both.",
   "description": "Embeddable browser chat widget: a custom element that discovers tools at page, origin and hub scope and dispatches each tool call to the right one. Two lines of HTML on any host, Rails or not.",
   "keywords": [
