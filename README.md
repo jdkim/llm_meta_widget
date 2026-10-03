@@ -4,7 +4,7 @@ Embeddable browser chat widget for the [llm_meta](https://github.com/pubannotati
 
 Client-orchestrated: the widget fetches host-side action schemas + host-published `.well-known/mcp.json` manifests at boot, dispatches tool_calls locally (page-embedded actions) or directly to MCP endpoints (host-wide well-known), and consumes the meta-server's SSE `single_llm_calls` API. Ships as a custom element in one self-contained ES module — on npm for any host, and in a Rails gem whose helper serves the identical file.
 
-**No** Devise, DB migrations, ChatManager, or PromptNavigator. Adds only `rails >= 8.0` as a runtime dep — so hosts that haven't bumped to 8.1 can adopt it without a Rails upgrade.
+**No** Devise, DB migrations, ChatManager, or PromptNavigator. The gem adds only `rails >= 8.0` as a runtime dep — so hosts that haven't bumped to 8.1 can adopt it without a Rails upgrade — and hosts that are not Rails at all skip the gem entirely.
 
 ## What you need first
 
@@ -22,13 +22,21 @@ answers the chat, or use no hub at all. Page actions and your own
 Nothing else is required: no database, no migrations, no JavaScript build
 step, no Node at runtime.
 
-| Requirement | Version |
-|---|---|
-| Ruby | >= 3.2 |
-| Rails | >= 8.0 (8.1 not required) |
-| An llm_meta_server **or** an Ollama | any |
+**Ruby and Rails are not requirements of the widget — only of the gem.** The
+widget is a custom element in one self-contained ES module, so a host that is
+not Rails loads it from the CDN with no Ruby, no Rails and no asset pipeline
+(see [Any host: the custom element](#any-host-the-custom-element)). The gem is
+one of three ways to get that same file, and the only one with a Ruby
+requirement.
 
-## Installation
+| Requirement | Version | Needed when |
+|---|---|---|
+| A browser with custom elements + ES modules | any current | always |
+| An llm_meta_server **or** an Ollama | any | always — something has to answer the chat |
+| Ruby | >= 3.2 | only if you install the gem |
+| Rails | >= 8.0 (8.1 not required) | only if you install the gem |
+
+## Installation (Rails hosts)
 
 ```ruby
 # Gemfile
@@ -44,7 +52,7 @@ deliberately skips `isolate_namespace`, so the helper is included into
 ActionView and the asset routes appear at the host's top level on their own.
 There are no migrations and no generators to run.
 
-## Minimal working example
+## Minimal working example (Rails)
 
 Put this on any view — a fresh `pages/demo.html.erb` is fine:
 
