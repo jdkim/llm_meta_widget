@@ -25,7 +25,7 @@ step, no Node at runtime.
 **Ruby and Rails are not requirements of the widget — only of the gem.** The
 widget is a custom element in one self-contained ES module, so a host that is
 not Rails loads it from the CDN with no Ruby, no Rails and no asset pipeline
-(see [Any host: the custom element](#any-host-the-custom-element)). The gem is
+(see [Non-Rails hosts](#non-rails-hosts-write-the-element-yourself)). The gem is
 one of three ways to get that same file, and the only one with a Ruby
 requirement.
 
@@ -36,7 +36,19 @@ requirement.
 | Ruby | >= 3.2 | only if you install the gem |
 | Rails | >= 8.0 (8.1 not required) | only if you install the gem |
 
-## Installation (Rails hosts)
+## Two ways to add the widget — choose one
+
+You do **not** need both. Pick the row that matches your app, then read only
+that section.
+
+| Your app | What you add | What you write |
+|---|---|---|
+| **Rails** | the gem, one line in your `Gemfile` | one helper call in a view. The helper writes the `<llm-meta-widget>` tag for you, so you never write that tag yourself |
+| **Anything else** — Python, Go, PHP, plain HTML… | one `<script>` tag from the CDN | the `<llm-meta-widget>` tag yourself |
+
+Both ways load the same file and run the same widget.
+
+## Rails apps: install the gem
 
 ```ruby
 # Gemfile
@@ -52,7 +64,27 @@ deliberately skips `isolate_namespace`, so the helper is included into
 ActionView and the asset routes appear at the host's top level on their own.
 There are no migrations and no generators to run.
 
-## Minimal working example (Rails)
+**Why install the gem?** The gem gives you the same widget as the CDN — the
+same file, byte for byte. It does not add features. What it gives you is a
+simpler way to deliver and configure the widget:
+
+- **Your own server sends the file**, at
+  `/llm_meta_widget_assets/llm-meta-widget.js`. The page makes no request to
+  any other site. If the CDN is down, your page still works, and the widget
+  also works behind a firewall or on a network with no internet access.
+- **Bundler manages the version**, like every other gem. You update it with
+  `bundle update`. With the CDN, the version is part of a URL that someone
+  has to remember to change.
+- **You write Ruby, not HTML attributes.** The helper takes normal Ruby
+  values and converts them for you. That matters most where the attributes
+  are easy to get wrong: `nil` and `[]` mean different things for
+  `well_known_urls:`, the allowlists take arrays, and the pickers take real
+  `true`/`false`. Written by hand, all three must be encoded correctly as
+  text.
+- **The defaults are set for you**, so your view names only the options you
+  want to change.
+
+## Rails apps: a minimal working example
 
 Put this on any view — a fresh `pages/demo.html.erb` is fine:
 
@@ -87,7 +119,12 @@ Once that works, the widget can converse but cannot *do* anything. To let the
 LLM act on your page or call your own services, declare tools using any of the
 **three tool classes** below.
 
-## Any host: the custom element
+## Non-Rails hosts: write the element yourself
+
+**If your app is Rails, you can skip this section.** The gem already does
+everything described here: its helper writes this tag for you and its engine
+sends this file. Read on if your app is not Rails — or if you use Rails but
+prefer the CDN to the gem, which the `element_path:` option allows.
 
 The widget is a custom element in a single self-contained ES module, so a host
 that is not Rails needs no gem, no template engine and no asset pipeline — two
@@ -95,10 +132,15 @@ lines of HTML:
 
 ```html
 <script type="module" src="https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.7"></script>
-<llm-meta-widget llm-url="https://your-hub.example"
-                 model="qwen3-8-27b-fast"
+<llm-meta-widget llm-url="https://your-meta-server.example"
+                 model="qwen3-6-35b-fast"
                  greeting="Hi — ask me anything about this page."></llm-meta-widget>
 ```
+
+This is the same configuration as the Rails example above, written in HTML
+instead of ERB. Both produce the same widget, so the advice in that section
+— CORS, a reachable `llm_url`, the hub's name for the model — applies here
+too.
 
 Nothing else is needed: the stylesheets and the markdown renderer are bundled
 in, and the element injects its own styles. The host serves no CSS and no JS.
