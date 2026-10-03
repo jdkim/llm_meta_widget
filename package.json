@@ -40,7 +40,7 @@
   "scripts": {
     "build": "node script/build.mjs",
     "lint": "eslint .",
-    "test:js": "node script/build.mjs --check && node --test app/assets/javascripts/llm_meta_widget/",
+    "test:js": "node script/build.mjs --check && node --test app/assets/javascripts/llm_meta_widget/*.test.mjs",
     "test:rb": "ruby test/partial_render_test.rb && ruby test/attribute_roundtrip_test.rb",
     "test": "npm run test:js && npm run test:rb",
     "prepublishOnly": "npm run build && npm run test:js && npm run lint"
