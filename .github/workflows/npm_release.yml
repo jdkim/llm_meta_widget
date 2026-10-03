@@ -51,12 +51,24 @@ jobs:
       # than a half-released pair of artefacts.
       - name: Check the tag matches both versions
         run: |
-          tag="${GITHUB_REF_NAME#v}"
           npm_version=$(node -p "require('./package.json').version")
           gem_version=$(sed -n 's/.*VERSION *= *"\(.*\)".*/\1/p' lib/llm_meta_widget/version.rb)
+          if [ "$npm_version" != "$gem_version" ]; then
+            echo "::error::package.json $npm_version and version.rb $gem_version disagree — the gem and the npm package must ship the same version"
+            exit 1
+          fi
+          # A manual dispatch has a branch ref, not a tag, so there is no tag to
+          # compare against — the two versions agreeing is all that can be
+          # checked. Dispatch is the recovery path for a release that failed
+          # after tagging, and for verifying this workflow's OIDC auth.
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "dispatched from $GITHUB_REF_NAME (not a tag); versions agree at $npm_version"
+            exit 0
+          fi
+          tag="${GITHUB_REF_NAME#v}"
           echo "tag=$tag npm=$npm_version gem=$gem_version"
-          if [ "$tag" != "$npm_version" ] || [ "$tag" != "$gem_version" ]; then
-            echo "::error::tag $tag, package.json $npm_version, version.rb $gem_version — these must all match"
+          if [ "$tag" != "$npm_version" ]; then
+            echo "::error::tag $tag does not match the version $npm_version in package.json and version.rb"
             exit 1
           fi
 
