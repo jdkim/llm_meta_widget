@@ -2,7 +2,7 @@
 
 Embeddable browser chat widget for the [llm_meta](https://github.com/pubannotation) ecosystem.
 
-Client-orchestrated: the widget fetches host-side action schemas + host-published `.well-known/mcp.json` manifests at boot, dispatches tool_calls locally (page-embedded actions) or directly to MCP endpoints (host-wide well-known), and consumes the meta-server's SSE `single_llm_calls` API. Ships one Rails helper + one view partial + a served orchestrator JS module.
+Client-orchestrated: the widget fetches host-side action schemas + host-published `.well-known/mcp.json` manifests at boot, dispatches tool_calls locally (page-embedded actions) or directly to MCP endpoints (host-wide well-known), and consumes the meta-server's SSE `single_llm_calls` API. Ships as a custom element in one self-contained ES module — on npm for any host, and in a Rails gem whose helper serves the identical file.
 
 **No** Devise, DB migrations, ChatManager, or PromptNavigator. Adds only `rails >= 8.0` as a runtime dep — so hosts that haven't bumped to 8.1 can adopt it without a Rails upgrade.
 
@@ -32,7 +32,7 @@ step, no Node at runtime.
 
 ```ruby
 # Gemfile
-gem "llm_meta_widget", "~> 0.4"
+gem "llm_meta_widget", "~> 0.7"
 ```
 
 ```
@@ -62,8 +62,8 @@ the role label turns into a spinning gear reading "Working…", and the reply
 streams in.
 
 If the panel opens but nothing comes back, it is almost always CORS. The hub
-must list your app's origin in its `config/initializers/cors.rb` for the
-`/api/*` resource, because the widget calls the hub **from the visitor's
+must list your app's origin in its `CORS_ORIGINS` environment variable for
+the `/api/*` resource, because the widget calls the hub **from the visitor's
 browser**, not from your server. Open the browser console: a blocked request
 says so explicitly.
 
@@ -248,7 +248,7 @@ By default the widget renders two pickers below the input textarea:
 - **Model dropdown** — populated from the hub's `GET /api/llms` (anon path returns Ollama-only, since the widget's LLM calls use `api_key_uuid: "ollama-local"`).
 - **Tool picker** — populated from the hub's `GET /api/mcp_servers` (anon path returns `public_to_anonymous: true` servers). Two-level UX: server bulk-toggle + individual tool checkboxes on expand.
 
-Both pickers require **CORS**: the meta-server must include the host's origin in its `config/initializers/cors.rb` allowlist (`/api/*` resource). Without CORS, the fetch is silently blocked and pickers stay empty.
+Both pickers require **CORS**: the meta-server must allow the host's origin on its `/api/*` resource. That allowlist is an environment variable, not code — `CORS_ORIGINS`, a comma-separated list — so adding a host is a deployment change and a restart, with no commit and nothing about one deployment's hosts published in the repo. Without CORS the fetch is silently blocked and the pickers stay empty.
 
 To adjust picker behavior at the helper call site:
 
@@ -257,8 +257,8 @@ To adjust picker behavior at the helper call site:
       llm_url:             "https://your-meta-server.example",
       tool_hub_url:        "https://your-meta-server.example",
       model:               "qwen3-6-35b-fast",   # initial selection
-      enable_model_picker: true,                 # false → hide picker, use fixed `model:`
-      enable_tool_picker:  true,                 # false → hide picker, no Class-1 tools
+      enable_model_picker: true,                 # false → omit picker, use fixed `model:`
+      enable_tool_picker:  true,                 # false → omit picker, no Class-1 tools
       models:              nil,                  # nil = all anon models; ["qwen3-6-35b-fast", …] = allowlist
       hub_tools:           nil                   # nil = all anon-public MCPs; ["togomcp", …] = allowlist by server name
     ) %>
@@ -289,8 +289,8 @@ To lock the widget to the fixed `model:` prop and disable Class-1 tools entirely
 | `well_known_urls:` | `nil` | `nil` = auto-discover same-origin; explicit array = fetch those; `[]` = disable |
 | `greeting:` | `nil` | First thing a visitor sees when the panel opens, above the offered prompt templates. `nil` = a generic line |
 | `max_rounds:` | `3` | Cap on tool-call rounds per LLM turn. Page actions cost a round each since 0.4.0 — raise it for multi-step flows |
-| `enable_model_picker:` | `true` | Show model dropdown (Level-1) |
-| `enable_tool_picker:` | `true` | Show tool picker (Level-1) |
+| `enable_model_picker:` | `true` | Show model dropdown (Level-1). `false` removes it from the DOM |
+| `enable_tool_picker:` | `true` | Show tool picker (Level-1). `false` removes it from the DOM |
 | `models:` | `nil` | Model-name allowlist; `nil` = all anon-available |
 | `hub_tools:` | `nil` | MCP-server-name allowlist; `nil` = all anon-public |
 
@@ -404,6 +404,10 @@ it most, since they must already know your form to press it.
   three tool classes plus prompts and resources. Its
   `app/views/annotation/text_annotation.html.erb` and `app/controllers/mcp_controller.rb`
   are the fullest example available.
+- **Shipping the element** — `docs/custom-element-distribution.md` is the design note
+  behind the custom-element move: the npm package and its CDN URL, why `main`,
+  `exports` and `sideEffects` are set the way they are, and why the gem and the npm
+  package must never drift in version.
 - **Issues and questions** — <https://github.com/jdkim/llm_meta_widget/issues>
 
 ## License
