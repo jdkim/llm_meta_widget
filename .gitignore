@@ -2,10 +2,22 @@
 /pkg/
 /tmp/
 
-# Screenshots and Chrome profiles written by test/e2e runs.
+# Screenshots, Chrome profiles and served scratch directories written by
+# test/e2e runs. Each test cleans up after itself, so these only appear when a
+# run crashes — but then they are a whole browser profile sitting untracked.
+# The patterns are broad on purpose: the names carry a pid, and every test
+# picks its own prefix (profile-, profile-ollama-, plainprof-).
 test/e2e/*.png
+test/e2e/*prof-*
 test/e2e/profile-*
+test/e2e/ollama-demo-*
+test/e2e/plain-host-*
 
 # npm tooling for linting the widget JS (see package.json).
 node_modules/
 tmp/
+
+# Claude Code scaffolding, including git worktrees under .claude/worktrees/.
+# Untracked it is harmless; committed by a stray `git add -A` it would drop a
+# whole second copy of the repository into history.
+.claude/
