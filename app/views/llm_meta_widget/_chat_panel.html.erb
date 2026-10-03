@@ -1173,14 +1173,30 @@
 	// so the shared conversation.css drives both. Without it there is no sign
 	// whether the assistant is still working or has quietly stopped — and on a
 	// local model a tool round can take a long time before the first token.
-	function markWorking(label) {
-		if (!label || label.classList.contains("is-working")) return;
-		label.innerHTML = '<span class="role-spinner" aria-hidden="true">\u2699\uFE0F</span> Working…';
-		label.classList.add("is-working");
+	var workingStates = new WeakMap();
+	function markWorking(label, phase) {
+		if (!label) return;
+		var state = workingStates.get(label);
+		if (!state) {
+			label.innerHTML = '<span class="role-spinner" aria-hidden="true">⚙️</span> <span class="lmw-working-phase" role="status" aria-live="polite"></span> <span class="lmw-working-elapsed" aria-hidden="true"></span>';
+			label.classList.add("is-working");
+			state = { started: Date.now(), timer: null };
+			var updateElapsed = function() {
+				var seconds = Math.floor((Date.now() - state.started) / 1000);
+				label.querySelector(".lmw-working-elapsed").textContent = "（" + Math.floor(seconds / 60) + "分" + (seconds % 60) + "秒経過）";
+			};
+			updateElapsed();
+			state.timer = setInterval(updateElapsed, 1000);
+			workingStates.set(label, state);
+		}
+		label.querySelector(".lmw-working-phase").textContent = phase || "回答を準備しています…";
 	}
 
 	function markDone(label) {
-		if (!label || !label.classList.contains("is-working")) return;
+		if (!label) return;
+		var state = workingStates.get(label);
+		if (state) clearInterval(state.timer);
+		workingStates.delete(label);
 		label.classList.remove("is-working");
 		label.textContent = roleLabel("assistant");
 	}
@@ -1357,6 +1373,7 @@
 		liveChips = null;
 		pendingChips = [];
 		markWorking(assistantBody.roleLabel);
+		var currentRound = 0;
 		var assistantMarkdown = "";  // accumulate raw markdown, re-render on each delta
 
 		try {
@@ -1385,18 +1402,26 @@
 				maxRounds:     MAX_ROUNDS,
 				provider:      LLM_PROVIDER === "ollama" ? "ollama" : "hub",
 				signal:        currentAbort.signal,
-				onToolCall: function(toolCall) { announceToolCall(toolCall); },
-				onToolDispatched: function(outcome) { resolveToolCall(outcome); },
+				onToolCall: function(toolCall) {
+					markWorking(assistantBody.roleLabel, "ツールを実行しています…");
+					announceToolCall(toolCall);
+				},
+				onToolDispatched: function(outcome) {
+					resolveToolCall(outcome);
+					markWorking(assistantBody.roleLabel, "ツール結果をもとに回答を準備しています…");
+				},
 				onPhase: function(name) {
 					// 'thinking' covers the long silence before the first
 					// token; 'responding' means text is on its way.
-					if (name === "responding") markDone(assistantBody.roleLabel);
-					else markWorking(assistantBody.roleLabel);
+					if (name === "responding") markWorking(assistantBody.roleLabel, "回答を生成しています…");
+					else if (name === "tool_execution") markWorking(assistantBody.roleLabel, "ツールを実行しています…");
+					else markWorking(assistantBody.roleLabel, currentRound > 0 ? "ツール結果をもとに回答を生成しています…" : "モデルの応答を待っています…");
 				},
 				onRoundStart: function(roundIdx) {
+					currentRound = roundIdx;
 					// A new round means more work: tool results are going back
 					// to the model, which is the longest wait of all.
-					markWorking(assistantBody.roleLabel);
+					markWorking(assistantBody.roleLabel, roundIdx > 0 ? "ツール結果をもとに回答を生成しています…" : "モデルの応答を待っています…");
 					// Loop mechanics are debugging info, not user-facing signal.
 					// Reuse the same assistant bubble across rounds — text just
 					// keeps streaming into it (accumulating markdown). Weaker
@@ -1413,7 +1438,7 @@
 					historyEl.scrollTop = historyEl.scrollHeight;
 				},
 				onTextDelta: function(delta) {
-					markDone(assistantBody.roleLabel);
+					markWorking(assistantBody.roleLabel, "回答を生成しています…");
 					collapseThinkingBlock();
 					assistantMarkdown += delta;
 					renderMarkdownInto(assistantBody, assistantMarkdown);
