@@ -1,8 +1,10 @@
 # Design note — distributing the widget as a custom element
 
-**Status:** implemented 2026-10-03 (same day), except for npm/CDN
-publication, which needs an npm account. Written as a proposal; kept as the
-record of why the shape is what it is.
+**Status:** implemented and published 2026-10-03. The element shipped in 0.7.0,
+npm/CDN publication followed the same day, and 0.7.2 fixed the one regression the
+move introduced — see the correction below. Written as a proposal and kept as the
+record of why the shape is what it is, with outcomes marked inline rather than
+rewritten away.
 **Problem owner:** adopters whose host application is not Rails.
 
 **What landed, and what did not**
@@ -14,9 +16,12 @@ runs), a route and controller action serving the bundle, and the partial
 reduced to the element tag. The gem keeps its helper signature, so
 PubDictionaries needs no edit.
 
-Not landed: the npm package and the CDN URL, so the two-line integration in
-the example below currently means "load the file the gem serves, or
-self-host it". Everything else about it is true today.
+Landed since: the npm package and the CDN URL. `@aibranch/llm-meta-widget` is on
+npm, and `https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.7` resolves to
+the bundle, so the two-line integration in the example below is now literally
+true — no gem, no Rails and no self-hosting required. The gem and the npm package
+ship the identical file, which is checked rather than assumed: both 0.7.2 copies
+are sha1 `82d448cdd51fb81a`.
 
 Verified on a plain HTML page served by `python3 -m http.server`, with no
 Rails anywhere: the element upgrades and builds its own DOM, injects its own
@@ -31,6 +36,24 @@ with `var` rather than destructured as `const` — the latter throws the moment
 a visitor changes model, and nothing before the browser would catch it. And
 the 985 lines of panel logic contain no ERB at all, which is why they moved
 verbatim rather than being rewritten.
+
+**Correction — the markup did contain ERB (shipped broken, fixed in 0.7.2).**
+That second finding was true of the panel's JavaScript and false of its HTML.
+The template carried six `<% if enable_model_picker %>`-style tags plus the tail
+of an ERB comment. Moved verbatim into a JS template literal they became inert
+text, so they rendered as visible characters in the panel *and* the two picker
+flags they implemented silently stopped being honoured — a disabled tools picker
+rendered anyway. It shipped in 0.7.0, shipped again in 0.7.1, and was found by
+eye in a screenshot rather than by any test. 0.7.2 removes the ERB and prunes the
+pickers in `boot()` instead, which is where that conditionality has to live once
+the template is static. `markup.test.mjs` now fails on any `<%` or `%>` in the
+source or the built bundle, and the plain-host e2e run reports any template
+syntax visible in the rendered panel.
+
+The lesson is narrower than "grep for ERB". Moving a template between two
+languages that both use angle brackets fails *silently*, because the receiving
+language has no opinion about the sending language's delimiters — there is no
+parse error to catch, only characters that happen to be inert.
 
 ## Why
 
@@ -204,6 +227,30 @@ exists:
 3. Later releases run from Actions with `permissions: id-token: write`, no
    stored token. GitHub-hosted runners only; self-hosted is unsupported.
 
+All three are done: 0.7.0 was published by hand, the Trusted Publisher is
+configured, and 0.7.2 was the first release published end-to-end from a tag with
+no credential anywhere. Two things each cost a release and are easy to miss:
+
+- **Tick `npm publish` under Allowed actions.** `npm stage publish` is always
+  allowed and cannot be switched off, so a configuration with only that looks
+  permissive while quietly routing every release into staged publishing, which
+  waits for a maintainer to approve it with 2FA. `npm dist-tag` is not needed:
+  the implicit `latest` assignment is part of the publish operation.
+- **Do not give `actions/setup-node` a `registry-url`.** With no token supplied
+  it still exports the literal placeholder `NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX`
+  and writes it into a step `.npmrc`. npm sends that credential instead of
+  performing the OIDC exchange, and the registry answers `E404 … could not be
+  found or you do not have permission`, which reads like a missing package rather
+  than an auth failure. Trusted publishing wants no credential configured at all.
+
+Diagnosing either needs `npm publish --loglevel verbose`: npm reports a failed
+exchange only at verbose level before falling back to token auth, so the visible
+symptom is a bare `ENEEDAUTH`. Two more things that look like failures and are
+not — a successful publish answers `PUT 202`, not 201, and takes roughly 90
+seconds to appear, so an empty packument straight after a green run means
+nothing; and a version-conflict error proves nothing about auth, because npm
+raises it from the public packument GET before any authenticated request.
+
 Note the asymmetry: the trusted publisher keys on the **GitHub** repo, which
 lives under `jdkim/`, while the npm scope is `@aibranch`. That works — they are
 different namespaces — but it is worth knowing before someone goes looking for
@@ -215,11 +262,15 @@ fail on a missing interpreter. `npm test` runs both locally.
 
 ## Risks
 
-**The refactor touches the least-tested half of the codebase.** The 107 node
-tests cover `orchestrator.js`. The panel has ESLint and the browser e2e runs,
-nothing more — and this moves 1,454 lines of it. Add node tests for attribute
-parsing (including the two traps above) and element construction *before*
-moving any code.
+**The refactor touches the least-tested half of the codebase.** At the time the
+node tests covered `orchestrator.js` only; the panel had ESLint and the browser
+e2e runs, nothing more — and this moved 1,454 lines of it. Attribute-parsing
+tests were written before the move as this said to (`config.test.mjs`), and the
+suite now stands at 131. This risk still landed, though, because what went
+untested was the *markup*: `element.js` cannot be imported headlessly — its CSS
+imports need esbuild's loader — so the template had no unit coverage of any kind
+until `markup.test.mjs`, and the ERB regression above walked straight through the
+gap.
 
 **Version sync.** The gem version and the npm version must not drift. Either one
 release process drives both, or the gem pins an exact npm version. Two
@@ -244,5 +295,6 @@ one static asset.
 - Should the element emit DOM events (`llm-widget:turn-complete`, etc.) so hosts
   can react without reaching into internals? Cheap to add at build time,
   awkward to retrofit later.
-- npm package name: `llm-meta-widget` is free to check, and should match the
-  gem name for discoverability.
+- ~~npm package name~~ — **resolved:** `@aibranch/llm-meta-widget`. Scoped to the
+  `aibranch` org rather than matching the bare gem name; see Publishing to npm
+  for why that scope and not `@pubann`.
