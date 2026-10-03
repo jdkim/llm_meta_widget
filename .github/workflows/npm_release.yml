@@ -1,0 +1,75 @@
+name: Release Package on npm
+
+# The same v* tag releases both artefacts: gem_release.yml publishes the gem,
+# this publishes @aibranch/llm-meta-widget. One tag, two registries — which is
+# the only way the two versions stay in step (see
+# docs/custom-element-distribution.md, "Publishing to npm").
+on:
+  push:
+    tags:
+      - v*
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: Publish to npm
+    # GitHub-hosted only: npm's trusted publishing does not support
+    # self-hosted runners.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The OIDC token npm verifies against the Trusted Publisher configured on
+      # the package. Without this the publish falls back to looking for a token
+      # and fails.
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # Trusted publishing requires Node >= 22.14.0.
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      # Node 22 bundles npm 10.x, but trusted publishing needs >= 11.5.1.
+      # Without this the publish fails with an auth error that looks like a
+      # misconfigured Trusted Publisher rather than an old CLI.
+      - name: Upgrade npm to a version that can use OIDC
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The gem version, the npm version and the tag must agree. Two
+      # independently versioned copies of the same client is the drift the
+      # design note warns about, and a mismatch here is far cheaper to find
+      # than a half-released pair of artefacts.
+      - name: Check the tag matches both versions
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          npm_version=$(node -p "require('./package.json').version")
+          gem_version=$(sed -n 's/.*VERSION *= *"\(.*\)".*/\1/p' lib/llm_meta_widget/version.rb)
+          echo "tag=$tag npm=$npm_version gem=$gem_version"
+          if [ "$tag" != "$npm_version" ] || [ "$tag" != "$gem_version" ]; then
+            echo "::error::tag $tag, package.json $npm_version, version.rb $gem_version — these must all match"
+            exit 1
+          fi
+
+      # Fails if the committed bundle has drifted from its sources, so a
+      # release can never ship a bundle the tag does not actually contain.
+      # test:js rather than test, because there is no Ruby on this runner.
+      - name: Verify the bundle and run the JS tests
+        run: npm run test:js
+
+      - name: Lint
+        run: npm run lint
+
+      # No --provenance flag: trusted publishing attaches provenance
+      # automatically. No token either — that is the point.
+      - name: Publish
+        run: npm publish
