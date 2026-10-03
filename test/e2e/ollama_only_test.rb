@@ -38,9 +38,11 @@ end
 serve_dir = File.join(OUT, "ollama-demo-#{Process.pid}")
 FileUtils.mkdir_p File.join(serve_dir, "llm_meta_widget_assets")
 FileUtils.mkdir_p File.join(serve_dir, ".well-known")
-%w[app/assets/javascripts/llm_meta_widget/orchestrator.js
-   app/assets/javascripts/llm_meta_widget/marked.esm.js
-   app/assets/stylesheets/llm_meta_widget/conversation.css].each do |asset|
+# One file now: the partial loads the bundled custom element, which carries the
+# orchestrator, marked and both stylesheets inside it. Copying the old three
+# instead left the bundle 404ing and the element never defined — the widget
+# simply never appeared, which is how this test caught the custom-element move.
+%w[app/assets/javascripts/llm_meta_widget/llm-meta-widget.js].each do |asset|
   FileUtils.cp File.join(ROOT, asset), File.join(serve_dir, "llm_meta_widget_assets", File.basename(asset))
 end
 # An empty manifest rather than none: a 404 here is harmless but noisy, and

@@ -41,11 +41,11 @@
     "build": "node script/build.mjs",
     "lint": "eslint .",
     "test:js": "node script/build.mjs --check && node --test app/assets/javascripts/llm_meta_widget/",
-    "test:rb": "ruby test/partial_render_test.rb",
+    "test:rb": "ruby test/partial_render_test.rb && ruby test/attribute_roundtrip_test.rb",
     "test": "npm run test:js && npm run test:rb",
     "prepublishOnly": "npm run build && npm run test:js && npm run lint"
   },
-  "//prepublishOnly": "Deliberately test:js and not test:rb — publishing may run on a CI runner with no Ruby, and a release must not fail on a missing interpreter. The Ruby side is covered by `npm test` locally and by the gem's own release path.",
+  "//prepublishOnly": "Deliberately test:js and not test:rb \u2014 publishing may run on a CI runner with no Ruby, and a release must not fail on a missing interpreter. The Ruby side is covered by `npm test` locally and by the gem's own release path.",
   "devDependencies": {
     "esbuild": "^0.28.2",
     "eslint": "^9.0.0",
