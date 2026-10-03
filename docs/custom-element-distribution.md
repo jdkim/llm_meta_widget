@@ -72,7 +72,7 @@ to npm and served from a CDN. Integration in any stack, or none:
 
 ```html
 <script type="module"
-        src="https://cdn.jsdelivr.net/npm/llm-meta-widget@0.7/dist/llm-meta-widget.js"></script>
+        src="https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.7"></script>
 <llm-meta-widget llm-url="https://hub.aibranch.org"
                  tool-hub-url="https://hub.aibranch.org"
                  model="qwen3-8-27b-fast"
@@ -161,6 +161,57 @@ reason about. Revisit if style collisions prove real in the field.
 `<llm-meta-widget …>` with the mapped attributes, vendoring the same built
 module so Rails hosts need no CDN. One implementation, two delivery paths —
 rather than two implementations drifting.
+
+## Publishing to npm
+
+Published as **`@aibranch/llm-meta-widget`** under the `aibranch` org — a
+separate namespace from `@pubann`, matching the deployed `aibranch.org`
+hostnames, because the widget is the generic client and PubDictionaries is one
+adopter of it.
+
+The CDN URL has no path:
+
+```
+https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.7
+```
+
+`main` and `exports["."]` both point at the bundle, so jsdelivr resolves the
+bare specifier to it. A second export, `./orchestrator`, is deliberate: the
+orchestrator is the public JS API for anyone who wants to build their own UI on
+top instead of using the element.
+
+`sideEffects: true` matters more than it looks. The bundle's entire purpose is
+its side effects — defining the custom element and injecting the styles — so
+declaring it side-effect-free would licence a bundler to drop an import that
+exists for nothing else.
+
+`files` ships only the two consumable modules and this note. The ERB partial,
+the Ruby helper and the unbundled sources are the gem's business; npm adds
+README and LICENSE on its own. Result: 6 files, ~69 kB packed.
+
+`publishConfig.access: "public"` is set because a **scoped package publishes
+private by default**, which fails outright on a free org. Having it in the file
+means nobody has to remember `--access public` at the worst moment.
+
+**The release order is forced by npm, not by preference.** npm has no
+pending-publisher, so trusted publishing cannot be configured until the package
+exists:
+
+1. `npm login` as a member of the org, then `npm publish` by hand — the one
+   time a human credential is used.
+2. Add the Trusted Publisher in the package's npm settings: GitHub org `jdkim`,
+   repo `llm_meta_widget`, and the workflow filename, exactly.
+3. Later releases run from Actions with `permissions: id-token: write`, no
+   stored token. GitHub-hosted runners only; self-hosted is unsupported.
+
+Note the asymmetry: the trusted publisher keys on the **GitHub** repo, which
+lives under `jdkim/`, while the npm scope is `@aibranch`. That works — they are
+different namespaces — but it is worth knowing before someone goes looking for
+an `aibranch` GitHub org that does not exist.
+
+`prepublishOnly` runs the build, the JS tests and the linter, but **not** the
+Ruby test: a publish may run on a runner with no Ruby, and a release must not
+fail on a missing interpreter. `npm test` runs both locally.
 
 ## Risks
 

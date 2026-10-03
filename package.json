@@ -1,13 +1,51 @@
 {
-  "name": "llm_meta_widget",
-  "private": true,
-  "description": "Build, lint and test tooling for the widget's JavaScript. `npm run build` produces the bundled custom element that the gem ships and that a non-Rails host can load directly.",
+  "name": "@aibranch/llm-meta-widget",
+  "version": "0.7.0",
+  "//version": "Must stay in step with lib/llm_meta_widget/version.rb. Two independently versioned copies of the same client is the drift docs/custom-element-distribution.md warns about: bump both, release both.",
+  "description": "Embeddable browser chat widget: a custom element that discovers tools at page, origin and hub scope and dispatches each tool call to the right one. Two lines of HTML on any host, Rails or not.",
+  "keywords": [
+    "llm",
+    "chat-widget",
+    "custom-element",
+    "mcp",
+    "model-context-protocol",
+    "tool-calling"
+  ],
+  "license": "Apache-2.0",
+  "author": "Jin-Dong Kim",
+  "homepage": "https://github.com/jdkim/llm_meta_widget",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jdkim/llm_meta_widget.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jdkim/llm_meta_widget/issues"
+  },
   "type": "module",
+  "main": "app/assets/javascripts/llm_meta_widget/llm-meta-widget.js",
+  "exports": {
+    ".": "./app/assets/javascripts/llm_meta_widget/llm-meta-widget.js",
+    "./orchestrator": "./app/assets/javascripts/llm_meta_widget/orchestrator.js"
+  },
+  "sideEffects": true,
+  "files": [
+    "app/assets/javascripts/llm_meta_widget/llm-meta-widget.js",
+    "app/assets/javascripts/llm_meta_widget/orchestrator.js",
+    "docs/custom-element-distribution.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "//packaging": "Why main/exports/sideEffects/files are set this way: docs/custom-element-distribution.md, 'Publishing to npm'.",
   "scripts": {
     "build": "node script/build.mjs",
     "lint": "eslint .",
-    "test": "node script/build.mjs --check && node --test app/assets/javascripts/llm_meta_widget/"
+    "test:js": "node script/build.mjs --check && node --test app/assets/javascripts/llm_meta_widget/",
+    "test:rb": "ruby test/partial_render_test.rb",
+    "test": "npm run test:js && npm run test:rb",
+    "prepublishOnly": "npm run build && npm run test:js && npm run lint"
   },
+  "//prepublishOnly": "Deliberately test:js and not test:rb — publishing may run on a CI runner with no Ruby, and a release must not fail on a missing interpreter. The Ruby side is covered by `npm test` locally and by the gem's own release path.",
   "devDependencies": {
     "esbuild": "^0.28.2",
     "eslint": "^9.0.0",

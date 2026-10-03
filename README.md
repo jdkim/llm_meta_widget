@@ -86,16 +86,24 @@ that is not Rails needs no gem, no template engine and no asset pipeline — two
 lines of HTML:
 
 ```html
-<script type="module" src="/llm_meta_widget_assets/llm-meta-widget.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.7"></script>
 <llm-meta-widget llm-url="https://your-hub.example"
                  model="qwen3-8-27b-fast"
                  greeting="Hi — ask me anything about this page."></llm-meta-widget>
 ```
 
-Serve that one file from anywhere you like: the gem serves it at the path above,
-and a non-Rails host can copy it out of the gem (or off a release) and serve it
-as a static asset. Nothing else is needed — the stylesheets and the markdown
-renderer are bundled in, and the element injects its own styles.
+Nothing else is needed: the stylesheets and the markdown renderer are bundled
+in, and the element injects its own styles. The host serves no CSS and no JS.
+
+Three ways to get that one file, in descending order of convenience:
+
+- **the CDN**, as above — `@aibranch/llm-meta-widget` on npm, no path needed
+  because the package's `main` is the bundle;
+- **the gem**, which serves the identical file at
+  `/llm_meta_widget_assets/llm-meta-widget.js` for Rails hosts, and is what the
+  `llm_meta_widget` helper points at;
+- **self-hosted** — copy it out of the package or the gem and serve it as a
+  static asset, if you would rather not depend on a CDN.
 
 The two Rails-specific pieces are gone from the host's side of the contract.
 What is NOT gone is the host page's own contract, because those pieces belong to
