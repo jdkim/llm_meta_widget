@@ -22,13 +22,6 @@ answers the chat, or use no hub at all. Page actions and your own
 Nothing else is required: no database, no migrations, no JavaScript build
 step, no Node at runtime.
 
-**Ruby and Rails are not requirements of the widget — only of the gem.** The
-widget is a custom element in one self-contained ES module, so a host that is
-not Rails loads it from the CDN with no Ruby, no Rails and no asset pipeline
-(see [Non-Rails hosts](#non-rails-hosts-write-the-element-yourself)). The gem is
-one of three ways to get that same file, and the only one with a Ruby
-requirement.
-
 | Requirement | Version | Needed when |
 |---|---|---|
 | A browser with custom elements + ES modules | any current | always |
@@ -155,10 +148,11 @@ Three ways to get that one file, in descending order of convenience:
 - **self-hosted** — copy it out of the package or the gem and serve it as a
   static asset, if you would rather not depend on a CDN.
 
-The two Rails-specific pieces are gone from the host's side of the contract.
-What is NOT gone is the host page's own contract, because those pieces belong to
-the host: the `#ai-actions` JSON block, `window.aiState` and `window.aiActions`
-are declared exactly as they are under Rails (see the three tool classes below).
+Going without the gem removes the Rails pieces — the helper and the partial.
+It does not remove your page's own contract, because those parts belong to the
+page rather than to Rails: the `#ai-actions` JSON block, `window.aiState` and
+`window.aiActions` are declared exactly as they are under Rails (see the three
+tool classes below).
 
 **Attributes** map one-to-one onto the helper's keyword options. Three are not
 obvious and are the ones that bite:
@@ -298,7 +292,7 @@ By default the widget renders two pickers below the input textarea:
 - **Model dropdown** — populated from the hub's `GET /api/llms` (anon path returns Ollama-only, since the widget's LLM calls use `api_key_uuid: "ollama-local"`).
 - **Tool picker** — populated from the hub's `GET /api/mcp_servers` (anon path returns `public_to_anonymous: true` servers). Two-level UX: server bulk-toggle + individual tool checkboxes on expand.
 
-Both pickers require **CORS**: the meta-server must allow the host's origin on its `/api/*` resource. That allowlist is an environment variable, not code — `CORS_ORIGINS`, a comma-separated list — so adding a host is a deployment change and a restart, with no commit and nothing about one deployment's hosts published in the repo. Without CORS the fetch is silently blocked and the pickers stay empty.
+Both pickers require **CORS**, the same way the chat itself does: the hub must list your page's origin in its `CORS_ORIGINS` environment variable for the `/api/*` resource. Without that the fetches are blocked silently and both pickers simply stay empty.
 
 To adjust picker behavior at the helper call site:
 
@@ -323,6 +317,11 @@ To lock the widget to the fixed `model:` prop and disable Class-1 tools entirely
 ```
 
 ## All helper options
+
+These are the gem helper's keyword options. If you write the element by hand,
+each one has an attribute of the same name in kebab-case — `llm_url:` becomes
+`llm-url`, and so on. The attribute table above lists the few that do not
+translate directly.
 
 | Option | Default | Purpose |
 |---|---|---|
