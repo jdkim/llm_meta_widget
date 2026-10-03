@@ -106,7 +106,17 @@ jobs:
           done
           echo "no credential configured — OIDC is the only auth path"
 
+      # npm only attempts the OIDC exchange when it can see the Actions ID-token
+      # endpoint, which needs `id-token: write`. If these are empty the exchange is
+      # skipped silently and publish falls back to token auth (ENEEDAUTH).
+      - name: Confirm the Actions ID-token endpoint is visible to npm
+        run: |
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}${ACTIONS_ID_TOKEN_REQUEST_URL:-NO}"
+          echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN set: ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+yes}${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-NO}"
+
       # No --provenance flag: trusted publishing attaches provenance
       # automatically. No token either — that is the point.
+      # Verbose because a failed OIDC exchange is otherwise invisible: npm warns at
+      # verbose level and then falls back to token auth, surfacing only ENEEDAUTH.
       - name: Publish
-        run: npm publish
+        run: npm publish --loglevel verbose
