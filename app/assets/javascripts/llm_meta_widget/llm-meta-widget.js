@@ -3765,17 +3765,23 @@ function boot(cfg) {
   var actionsSchemaEl = document.getElementById(ACTIONS_SCHEMA_ID);
   var localTools = actionsSchemaEl ? JSON.parse(actionsSchemaEl.textContent) : [];
   var remoteToolsEl = document.getElementById(REMOTE_TOOLS_SCHEMA_ID);
-  var remoteTools = remoteToolsEl ? JSON.parse(remoteToolsEl.textContent) : [];
+  var baselineRemoteTools = remoteToolsEl ? JSON.parse(remoteToolsEl.textContent) : [];
+  var remoteTools = baselineRemoteTools.slice();
   var hubMcpServers = [];
   var selectedToolIds = /* @__PURE__ */ new Set();
+  baselineRemoteTools.forEach(function(t) {
+    selectedToolIds.add(t.id);
+  });
   function anyAllowedByAllowlist(name, allowlist) {
     return allowlist === null || allowlist.indexOf(name) >= 0;
   }
   function refreshRemoteToolsFromPicker() {
     var flat = [];
+    var seen = {};
     hubMcpServers.forEach(function(s) {
       (s.tools || []).forEach(function(t) {
         if (!selectedToolIds.has(t.id)) return;
+        seen[t.id] = true;
         flat.push({
           id: t.id,
           name: t.name,
@@ -3783,6 +3789,12 @@ function boot(cfg) {
           input_schema: t.input_schema
         });
       });
+    });
+    baselineRemoteTools.forEach(function(t) {
+      if (!seen[t.id] && selectedToolIds.has(t.id)) {
+        flat.push(t);
+        seen[t.id] = true;
+      }
     });
     remoteTools = flat;
     if (toolsCountEl) {

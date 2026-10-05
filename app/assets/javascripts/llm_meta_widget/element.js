@@ -299,7 +299,11 @@ function boot(cfg) {
   	// baseline (if any), then the level-1 picker adds/removes entries as
   	// the visitor toggles server checkboxes. Passed to runChatLoop on
   	// every submit so the current selection is respected turn-by-turn.
-  	var remoteTools = remoteToolsEl ? JSON.parse(remoteToolsEl.textContent) : [];
+  	// Keep the baseline separately: refreshRemoteToolsFromPicker() rebuilds
+  	// remoteTools wholesale, so without a pristine copy the pre-configured
+  	// tools vanish the moment the picker first renders.
+  	var baselineRemoteTools = remoteToolsEl ? JSON.parse(remoteToolsEl.textContent) : [];
+  	var remoteTools = baselineRemoteTools.slice();
 
   	// Level-1 picker caches. hubMcpServers[] is the list of anon-visible
   	// servers fetched from GET /api/mcp_servers; each server has an
@@ -310,6 +314,10 @@ function boot(cfg) {
   	// state (all-on / indeterminate / all-off).
   	var hubMcpServers = [];
   	var selectedToolIds = new Set();
+  	// A pre-configured tool IS a selection: seed the set so the picker renders
+  	// it checked and the visitor can turn it off, rather than the picker
+  	// silently overriding the page.
+  	baselineRemoteTools.forEach(function(t) { selectedToolIds.add(t.id); });
 
   	function anyAllowedByAllowlist(name, allowlist) {
   		return allowlist === null || allowlist.indexOf(name) >= 0;
@@ -319,9 +327,11 @@ function boot(cfg) {
   		// Flatten every SELECTED tool (across all servers) into remoteTools,
   		// adapted to runChatLoop's expected { id, name, description, input_schema }.
   		var flat = [];
+  		var seen = {};
   		hubMcpServers.forEach(function(s) {
   			(s.tools || []).forEach(function(t) {
   				if (!selectedToolIds.has(t.id)) return;
+  				seen[t.id] = true;
   				flat.push({
   					id:           t.id,
   					name:         t.name,
@@ -329,6 +339,12 @@ function boot(cfg) {
   					input_schema: t.input_schema
   				});
   			});
+  		});
+  		// A baseline tool whose server the picker never listed (not anon-visible,
+  		// or the fetch failed) has no checkbox to be found through — keep it
+  		// unless the visitor explicitly turned it off.
+  		baselineRemoteTools.forEach(function(t) {
+  			if (!seen[t.id] && selectedToolIds.has(t.id)) { flat.push(t); seen[t.id] = true; }
   		});
   		remoteTools = flat;
   		if (toolsCountEl) {
