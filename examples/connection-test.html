@@ -76,7 +76,12 @@ lookups.</p>
     }));
     el("remote-mcp-tools").textContent = JSON.stringify(chosen);
 
-    await import(`https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.7`);
+    // Pinned to an exact version on purpose. A real embed should use the range
+    // (@0.7) so it picks up patches, but jsDelivr caches the range URL's
+    // minified build for hours: right after a release, @0.7 can still serve the
+    // previous version even though @0.7.6 is already correct. A connection test
+    // has to be testing the build you think it is.
+    await import(`https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.7.6`);
     const w = document.createElement("llm-meta-widget");
     w.setAttribute("llm-url", HUB);
     w.setAttribute("tool-hub-url", HUB);
@@ -86,13 +91,6 @@ lookups.</p>
     // make the widget fetch /.well-known/mcp.json from THIS page's origin and log
     // a 404 — see the tri-state note in the README.
     w.setAttribute("well-known-urls", "");
-    // Workaround for widget <= 0.7.5 ONLY: in those builds the Level-1 tool
-    // picker rebuilt the tool list from its own (initially empty) selection on
-    // first render and silently discarded the pre-selection above. Fixed after
-    // 0.7.5 — the baseline now seeds the picker and shows up checked — so once
-    // the CDN version pinned below includes the fix, delete this line and the
-    // page will exercise the picker path too.
-    w.setAttribute("enable-tool-picker", "false");
     w.setAttribute("greeting", `Connection test. ${chosen[0].name} is already selected — ask me to use it.`);
     document.body.appendChild(w);
     pass("c4", `pre-selected <code>${chosen[0].name}</code> (id ${chosen[0].id})`);
