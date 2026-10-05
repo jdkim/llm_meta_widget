@@ -279,7 +279,7 @@ Declared out-of-band on the meta-server (via the hub's admin UI or `/user/:id/mc
 
 **Declaration.** No widget-side change. Register the server on the hub → flip `public: true` (visible to signed-in users) and optionally `public_to_anonymous: true` (visible to widget visitors without a login). See the meta-server's `Api::McpServersController`.
 
-**What the LLM sees.** Only tools from servers the visitor has **enabled via the tool picker** (see "Level-1 pickers" below). Nothing is auto-selected — the visitor opts in per session.
+**What the LLM sees.** Only tools the visitor has **enabled via the tool picker** (see "Level-1 pickers" below) — nothing is auto-selected, the visitor opts in per session. A page can set the starting selection instead, with `remote_tools_schema_id:`: those tools arrive already ticked, and the visitor can still untick them.
 
 **When the tool_call fires.** Synchronously during the turn — widget POSTs to the hub's `/api/llm_api_keys/:uuid/models/:name/single_llm_calls` endpoint with `tool_ids: [...]`; the hub proxies to each MCP server and streams results back through SSE.
 
@@ -334,7 +334,7 @@ translate directly.
 | `actions_schema_id:` | `"ai-actions"` | DOM id of the Class-3 schema block |
 | `state_global:` | `"aiState"` | Global window object holding Class-3 state readers |
 | `actions_global:` | `"aiActions"` | Global window object holding Class-3 implementations |
-| `remote_tools_schema_id:` | `"remote-mcp-tools"` | Optional DOM id for pre-configured Class-1 tools (bypasses picker) |
+| `remote_tools_schema_id:` | `"remote-mcp-tools"` | DOM id of a JSON block listing Class-1 tools (`{id, name, description, input_schema}`) to start with. They seed the picker rather than bypassing it — shown ticked, and the visitor may untick them. Read once, at boot |
 | `well_known_urls:` | `nil` | `nil` = auto-discover same-origin; explicit array = fetch those; `[]` = disable |
 | `greeting:` | `nil` | First thing a visitor sees when the panel opens, above the offered prompt templates. `nil` = a generic line |
 | `max_rounds:` | `3` | Cap on tool-call rounds per LLM turn. Page actions cost a round each since 0.4.0 — raise it for multi-step flows |
@@ -457,6 +457,10 @@ it most, since they must already know your form to press it.
   behind the custom-element move: the npm package and its CDN URL, why `main`,
   `exports` and `sideEffects` are set the way they are, and why the gem and the npm
   package must never drift in version.
+- **A page you can run** — `examples/connection-test.html` checks every call the
+  widget makes to a hub, one at a time, then mounts the widget with a tool
+  already selected. Serve it from an origin the hub allows and open it: if
+  something in the chain is wrong, it names which step.
 - **Issues and questions** — <https://github.com/jdkim/llm_meta_widget/issues>
 
 ## License
