@@ -17,6 +17,12 @@ const bundle = readFileSync(DIR + "llm-meta-widget.js", "utf8")
 
 // `<%` and `%>` have no legitimate use in this file: it is JavaScript, and the
 // markup it holds is HTML. Either delimiter means template syntax leaked in.
+//
+// element.dom.test.mjs now asserts the same thing behaviourally, on the rendered
+// panel. These stay because they reach further: they catch a delimiter anywhere
+// in the source or the shipped bundle, including a branch the default render
+// never reaches. The two structural tests that merely restated the fix's shape
+// were deleted when the DOM harness replaced them.
 for (const [name, text] of [["element.js", source], ["the built bundle", bundle]]) {
   test(`${name} contains no ERB delimiters`, () => {
     const found = [...text.matchAll(/<%|%>/g)].map((m) => {
@@ -26,20 +32,3 @@ for (const [name, text] of [["element.js", source], ["the built bundle", bundle]
     assert.deepEqual(found, [], `template syntax leaked into ${name}:\n${found.join("\n")}`)
   })
 }
-
-// The template is static, so the only thing that can honour the picker flags is
-// the pruning in boot(). If a picker is in the markup, its flag must still be
-// able to remove it — otherwise a host that disables one gets it anyway.
-test("every picker in the markup is pruned by its flag", () => {
-  for (const [cls, flag] of [
-    [".lmw-model-picker", "ENABLE_MODEL_PICKER"],
-    [".lmw-tools-picker", "ENABLE_TOOL_PICKER"],
-  ]) {
-    assert.ok(source.includes(`class="${cls.slice(1)}"`), `${cls} should be in the markup`)
-    assert.match(
-      source,
-      new RegExp(`if \\(!${flag}\\)\\s*dropNode\\(root\\.querySelector\\("${cls.replace(".", "\\.")}"\\)\\)`),
-      `${cls} is rendered unconditionally but ${flag} never removes it`,
-    )
-  }
-})

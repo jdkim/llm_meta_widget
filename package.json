@@ -49,6 +49,7 @@
   "devDependencies": {
     "esbuild": "^0.28.2",
     "eslint": "^9.0.0",
-    "globals": "^15.0.0"
+    "globals": "^15.0.0",
+    "jsdom": "^29.1.1"
   }
 }
