@@ -1,0 +1,105 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>llm_meta_widget — connection test</title>
+<style>
+  body { font: 15px/1.6 system-ui, sans-serif; max-width: 48rem; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.3rem; }
+  li { margin: .35rem 0; }
+  .ok   { color: #15803d; }
+  .fail { color: #b91c1c; }
+  .pending { color: #92400e; }
+  code { background: #f3f4f6; padding: .1rem .3rem; border-radius: 3px; }
+  #summary { margin: 1rem 0; padding: .75rem 1rem; border-radius: 6px; background: #f9fafb; border: 1px solid #e5e7eb; }
+</style>
+
+<h1>llm_meta_widget — connection test</h1>
+
+<p>Checks, in order, everything the widget needs from the hub, then mounts the
+widget itself with one hub-registered tool <em>pre-selected</em>. That last part
+matters: a pre-selected tool makes every chat turn carry <code>tool_ids</code>,
+which is the path that fails if the hub rejects anonymous tool lookups.</p>
+
+<ol id="checks">
+  <li id="c1" class="pending">1. Models — <code>GET /api/llms</code> (CORS + anonymous access)</li>
+  <li id="c2" class="pending">2. MCP servers — <code>GET /api/mcp_servers</code></li>
+  <li id="c3" class="pending">3. Tools of the target server</li>
+  <li id="c4" class="pending">4. Widget mounted with a pre-selected tool</li>
+</ol>
+
+<div id="summary">Running…</div>
+
+<p>If all four pass, open the panel at the bottom right and ask it to use the
+tool. A reply that uses the tool proves the whole chain; an error mentioning
+<code>Token is missing</code> would mean the hub still rejects anonymous tool
+lookups.</p>
+
+<!-- Pre-selected Class 1 tools. Filled in by the script BEFORE the element is
+     created, because the widget reads this block once, at boot. -->
+<script type="application/json" id="remote-mcp-tools">[]</script>
+
+<script type="module">
+  // ---- configure these two ------------------------------------------------
+  const HUB    = "https://hub.aibranch.org";
+  const SERVER = "TogoMCP";        // MCP server name as registered on the hub
+  const MODEL  = "qwen3-8-27b-fast";
+  // -------------------------------------------------------------------------
+
+  const el = (id) => document.getElementById(id);
+  const pass = (id, msg) => { el(id).className = "ok";   el(id).innerHTML += ` — <strong>OK</strong>: ${msg}`; };
+  const fail = (id, msg) => { el(id).className = "fail"; el(id).innerHTML += ` — <strong>FAILED</strong>: ${msg}`; throw new Error(msg); };
+
+  async function getJSON(url) {
+    const r = await fetch(url);                     // no credentials, no token: anonymous on purpose
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText} for ${url}`);
+    return r.json();
+  }
+
+  try {
+    const llms = await getJSON(`${HUB}/api/llms`);
+    const names = (llms.llms || []).flatMap(s => (s.models || []).map(m => m.value || m.name || m));
+    if (!names.length) fail("c1", "no models returned");
+    pass("c1", `${names.length} model(s)`);
+
+    const servers = (await getJSON(`${HUB}/api/mcp_servers`)).mcp_servers || [];
+    const target  = servers.find(s => s.name === SERVER);
+    if (!target) fail("c2", `${servers.length} server(s), none named ${SERVER}`);
+    pass("c2", `found ${SERVER}`);
+
+    const tools = (await getJSON(`${HUB}/api/mcp_servers/${target.uuid}/tools`)).tools || [];
+    if (!tools.length) fail("c3", `${SERVER} exposes no tools anonymously`);
+    pass("c3", `${tools.length} tool(s), e.g. ${tools[0].name}`);
+
+    // One tool is enough to exercise the tool_ids path, and keeps the model's
+    // choice obvious. Use every tool instead by dropping the slice.
+    const chosen = tools.slice(0, 1).map(t => ({
+      id: t.id, name: t.name, description: t.description, input_schema: t.input_schema
+    }));
+    el("remote-mcp-tools").textContent = JSON.stringify(chosen);
+
+    await import(`https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.7`);
+    const w = document.createElement("llm-meta-widget");
+    w.setAttribute("llm-url", HUB);
+    w.setAttribute("tool-hub-url", HUB);
+    w.setAttribute("model", MODEL);
+    w.setAttribute("remote-tools-schema-id", "remote-mcp-tools");
+    // Empty (not absent) switches off same-origin Class 2 discovery. Absent would
+    // make the widget fetch /.well-known/mcp.json from THIS page's origin and log
+    // a 404 — see the tri-state note in the README.
+    w.setAttribute("well-known-urls", "");
+    // Workaround for widget <= 0.7.5 ONLY: in those builds the Level-1 tool
+    // picker rebuilt the tool list from its own (initially empty) selection on
+    // first render and silently discarded the pre-selection above. Fixed after
+    // 0.7.5 — the baseline now seeds the picker and shows up checked — so once
+    // the CDN version pinned below includes the fix, delete this line and the
+    // page will exercise the picker path too.
+    w.setAttribute("enable-tool-picker", "false");
+    w.setAttribute("greeting", `Connection test. ${chosen[0].name} is already selected — ask me to use it.`);
+    document.body.appendChild(w);
+    pass("c4", `pre-selected <code>${chosen[0].name}</code> (id ${chosen[0].id})`);
+
+    el("summary").innerHTML = "<strong class='ok'>All checks passed.</strong> Open the panel and ask it to use the tool.";
+  } catch (e) {
+    el("summary").innerHTML = `<strong class='fail'>Stopped:</strong> ${e.message}` +
+      `<br>If this is a CORS error, the page's origin (<code>${location.origin}</code>) is not in the hub's allowlist.`;
+  }
+</script>
