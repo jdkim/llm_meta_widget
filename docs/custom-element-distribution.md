@@ -17,7 +17,7 @@ reduced to the element tag. The gem keeps its helper signature, so
 PubDictionaries needs no edit.
 
 Landed since: the npm package and the CDN URL. `@aibranch/llm-meta-widget` is on
-npm, and `https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.7` resolves to
+npm, and `https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.8` resolves to
 the bundle, so the two-line integration in the example below is now literally
 true — no gem, no Rails and no self-hosting required. The gem and the npm package
 ship the identical file, which is checked rather than assumed: both 0.7.2 copies
@@ -95,7 +95,7 @@ to npm and served from a CDN. Integration in any stack, or none:
 
 ```html
 <script type="module"
-        src="https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.7"></script>
+        src="https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.8"></script>
 <llm-meta-widget llm-url="https://hub.aibranch.org"
                  tool-hub-url="https://hub.aibranch.org"
                  model="qwen3-8-27b-fast"
@@ -195,7 +195,7 @@ adopter of it.
 The CDN URL has no path:
 
 ```
-https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.7
+https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.8
 ```
 
 `main` and `exports["."]` both point at the bundle, so jsdelivr resolves the

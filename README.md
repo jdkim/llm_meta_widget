@@ -124,7 +124,7 @@ that is not Rails needs no gem, no template engine and no asset pipeline — two
 lines of HTML:
 
 ```html
-<script type="module" src="https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.7"></script>
+<script type="module" src="https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.8"></script>
 <llm-meta-widget llm-url="https://your-meta-server.example"
                  model="qwen3-6-35b-fast"
                  greeting="Hi — ask me anything about this page."></llm-meta-widget>
@@ -134,6 +134,16 @@ This is the same configuration as the Rails example above, written in HTML
 instead of ERB. Both produce the same widget, so the advice in that section
 — CORS, a reachable `llm_url`, the hub's name for the model — applies here
 too.
+
+**`@0.8` is a range, and it stops at 0.8.x on purpose.** You get patches without
+touching your page, and you do not get a breaking release by surprise. The cost
+is that moving to 0.9 is a deliberate edit: read [CHANGELOG.md](CHANGELOG.md)
+first, because a major-or-minor bump here is where the page's own contract can
+change — 0.8.0 changed the shape of `window.aiState`, and a page that followed
+the new documentation while still loading `@0.7` would have had every state
+value silently replaced by an error string. Rails hosts are protected from that
+mismatch by the Gemfile constraint; a CDN embed has no such guard, so the
+version in that URL is the guard.
 
 Nothing else is needed: the stylesheets and the markdown renderer are bundled
 in, and the element injects its own styles. The host serves no CSS and no JS.
