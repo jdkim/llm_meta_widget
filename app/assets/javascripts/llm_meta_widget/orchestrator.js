@@ -971,7 +971,12 @@ export async function resourceLinesForTurn({ plan, cached, endpoint, read, budge
 const PROMPT_ARG_ALIASES = { dictionaries: "selected_dictionaries" }
 
 export function promptArgFromState(argName, state) {
-  const reader = (state && state[argName]) || (state && state[PROMPT_ARG_ALIASES[argName]])
+  // Same object shape the system-prompt annex consumes: { description, read }.
+  // The bare-function form was removed in 0.8.0, so an entry without `read` is
+  // simply not a reader — the prompt argument stays empty and the visitor fills
+  // it, which is the documented behaviour for state the page cannot supply.
+  const entry = (state && state[argName]) || (state && state[PROMPT_ARG_ALIASES[argName]])
+  const reader = entry && typeof entry.read === "function" ? entry.read : null
   if (typeof reader !== "function") return ""
   let value
   try {

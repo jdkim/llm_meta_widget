@@ -211,10 +211,17 @@ Declared inline on the same view as the widget. Runs as JavaScript in the browse
 
 <!-- (b) State readers folded into the LLM's system prompt EVERY turn, -->
 <!--     so the LLM can answer from page state without a tool_call. -->
+<!--     Each reader declares what it returns, like every other channel. -->
 <script>
   window.aiState = {
-    text:                  function() { return $("#text").val() || ""; },
-    selected_dictionaries: function() { return getSelected(); }
+    text: {
+      description: "the text the user wants to annotate",
+      read: function() { return $("#text").val() || ""; }
+    },
+    selected_dictionaries: {
+      description: "the dictionaries the user has chosen for annotation",
+      read: function() { return getSelected(); }
+    }
   };
 </script>
 
@@ -226,7 +233,17 @@ Declared inline on the same view as the widget. Runs as JavaScript in the browse
 </script>
 ```
 
-**What the LLM sees.** The `ai-actions` JSON is passed to the meta-server as `local_tools` for every turn. Alongside it, every reader in `window.aiState` is invoked (each turn) and the results are JSON-serialized into a `Current page state:` block appended to the system prompt — the LLM can answer from state directly instead of tool-calling for lookups.
+**What the LLM sees.** The `ai-actions` JSON is passed to the meta-server as `local_tools` for every turn. Alongside it, every reader in `window.aiState` is invoked (each turn) and rendered into a `Current page state:` block appended to the system prompt, one line per reader, with its description beside its value:
+
+```
+Current page state:
+- text (the text the user wants to annotate): "The stomach was examined."
+- selected_dictionaries (the dictionaries the user has chosen for annotation): ["uberon"]
+```
+
+So the LLM can answer from state directly instead of tool-calling for lookups, and knows what each value *means* rather than guessing from the key.
+
+**Breaking change in 0.8.0.** A reader must be `{ description, read }`. The bare-function form — `text: function() {…}` — is removed, with no fallback. A key that still uses it is reported to the console by name, with the shape it should have, and skipped; the page's other readers keep working. Descriptions are not decoration: every other channel the widget declares to the model already carries one (Class 3 tool schemas, Class 2 `.well-known` tools, Class 1 hub tools, resources), and state readers were the exception.
 
 **When the tool_call fires.** During the turn, as soon as the LLM emits the
 call. Since 0.4.0 the action's outcome — `{ok: true, applied: "<name>"}`, or
@@ -332,7 +349,7 @@ translate directly.
 | `api_key_uuid:` | `"ollama-local"` | Hub API-key uuid to invoke |
 | `element_path:` | `"/llm_meta_widget_assets/llm-meta-widget.js"` | The bundled element the page loads. Served by the gem's engine; override to load it from elsewhere |
 | `actions_schema_id:` | `"ai-actions"` | DOM id of the Class-3 schema block |
-| `state_global:` | `"aiState"` | Global window object holding Class-3 state readers |
+| `state_global:` | `"aiState"` | Global window object holding Class-3 state readers, each `{ description, read }` (see the breaking change in 0.8.0) |
 | `actions_global:` | `"aiActions"` | Global window object holding Class-3 implementations |
 | `remote_tools_schema_id:` | `"remote-mcp-tools"` | DOM id of a JSON block listing Class-1 tools (`{id, name, description, input_schema}`) to start with. They seed the picker rather than bypassing it — shown ticked, and the visitor may untick them. Read once, at boot |
 | `well_known_urls:` | `nil` | `nil` = auto-discover same-origin; explicit array = fetch those; `[]` = disable |

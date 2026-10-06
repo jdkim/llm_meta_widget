@@ -954,13 +954,67 @@ function boot(cfg) {
   		currentThinkingBody  = null;
   	}
 
-  	function currentPageState() {
-  		var reader = window[STATE_GLOBAL] || {};
-  		var out = {};
-  		Object.keys(reader).forEach(function(k) {
-  			try { out[k] = reader[k](); } catch (e) { out[k] = "<error: " + e.message + ">"; }
+  	// Every declaration channel the widget hands the model carries a
+  	// developer-authored description — Class 3 action schemas, Class 2
+  	// .well-known tools, Class 1 hub tools, static-primitives resources. State
+  	// readers used to be the exception: the model saw a bare key and had to
+  	// infer meaning from its name, which holds for `text` and falls apart for
+  	// `annotation_mode` or `pending_merges`. Each reader now declares what it
+  	// returns, in the same shape as everything else.
+  	//
+  	// The bare-function form is GONE as of 0.8.0 — no fallback branch. A page
+  	// that still uses it is told exactly what to change, per key, and that key
+  	// is skipped; the rest of the page still works.
+  	function stateReaders() {
+  		var declared = window[STATE_GLOBAL] || {};
+  		var out = [];
+  		Object.keys(declared).forEach(function(key) {
+  			var entry = declared[key];
+  			var hasDescription = entry && typeof entry.description === "string" && entry.description.trim() !== "";
+  			var hasRead        = entry && typeof entry.read === "function";
+  			if (!hasDescription || !hasRead) {
+  				console.error(
+  					"[llm-meta-widget] " + STATE_GLOBAL + "." + key + " is not a valid state reader. " +
+  					"Expected { description: \"what this value is\", read: function () { … } }, got " +
+  					(typeof entry === "function" ? "a bare function (the 0.7 form, removed in 0.8)" : describeValue(entry)) +
+  					". Skipping " + key + "."
+  				);
+  				return;
+  			}
+  			out.push({ key: key, description: entry.description, read: entry.read });
   		});
   		return out;
+  	}
+
+  	function describeValue(v) {
+  		if (v === null) return "null";
+  		if (Array.isArray(v)) return "an array";
+  		if (typeof v === "object") {
+  			var missing = [];
+  			if (typeof v.description !== "string" || v.description.trim() === "") missing.push("description");
+  			if (typeof v.read !== "function") missing.push("read");
+  			return "an object missing " + missing.join(" and ");
+  		}
+  		return typeof v;
+  	}
+
+  	function currentPageState() {
+  		return stateReaders().map(function(r) {
+  			var value;
+  			try { value = r.read(); } catch (e) { value = "<error: " + e.message + ">"; }
+  			return { key: r.key, description: r.description, value: value };
+  		});
+  	}
+
+  	// One line per reader, with its description inline. A separate glossary
+  	// above the values would make the model match names across two lists; the
+  	// point is that it reads the meaning and the value together.
+  	function pageStateLines() {
+  		var readers = currentPageState();
+  		if (readers.length === 0) return [ "(this page declares no state)" ];
+  		return readers.map(function(r) {
+  			return "- " + r.key + " (" + r.description + "): " + JSON.stringify(r.value);
+  		});
   	}
 
   	function currentSystemPrompt(resourceLines) {
@@ -973,9 +1027,8 @@ function boot(cfg) {
   			"3. After a tool returns a result, use it: either take the next step the task needs, or — if the task is done — answer in plain text. Do not stop silently after a tool call.",
   			"4. NEVER repeat a call you have already made with the same or similar arguments — its result is already in the conversation history.",
   			"",
-  			"Current page state:",
-  			JSON.stringify(currentPageState(), null, 2)
-  		].concat(resourceLines || []).join("\n");
+  			"Current page state:"
+  		].concat(pageStateLines()).concat(resourceLines || []).join("\n");
   	}
 
   	// Runs once per send, before the system prompt is built: a volatile

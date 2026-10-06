@@ -1206,9 +1206,17 @@ test("a volatile re-read is trimmed against the budget too", async () => {
 
 // ---- prompt templates ---------------------------------------------------
 
+// 0.8.0 shape: every reader declares what it returns. The bare-function form
+// is gone, so a fixture using it would no longer be a reader at all.
 const pageState = {
-  text: () => "The stomach was examined.",
-  selected_dictionaries: () => [ "uberon", "mondo_disease" ]
+  text: {
+    description: "the text the user wants to annotate",
+    read: () => "The stomach was examined."
+  },
+  selected_dictionaries: {
+    description: "the dictionaries the user has chosen",
+    read: () => [ "uberon", "mondo_disease" ]
+  }
 }
 
 test("promptArgFromState reads an argument named after a page reader", () => {
@@ -1224,11 +1232,20 @@ test("promptArgFromState returns empty for an argument the page cannot supply", 
 })
 
 test("promptArgFromState survives a throwing page reader", () => {
-  assert.equal(promptArgFromState("text", { text: () => { throw new Error("page bug") } }), "")
+  assert.equal(promptArgFromState("text", { text: { description: "d", read: () => { throw new Error("page bug") } } }), "")
 })
 
 test("promptArgFromState treats an empty selection as nothing to fill with", () => {
-  assert.equal(promptArgFromState("dictionaries", { selected_dictionaries: () => [] }), "")
+  assert.equal(promptArgFromState("dictionaries", { selected_dictionaries: { description: "d", read: () => [] } }), "")
+})
+
+test("promptArgFromState ignores the removed bare-function form", () => {
+  // 0.8.0 breaking change: a bare function is not a reader. It must not be
+  // called — silently filling from it would hide the page's outdated shape.
+  let called = false
+  const legacy = { text: () => { called = true; return "should not be used" } }
+  assert.equal(promptArgFromState("text", legacy), "")
+  assert.equal(called, false)
 })
 
 test("resolvePromptArguments fills what the page has", () => {
@@ -1241,7 +1258,7 @@ test("resolvePromptArguments fills what the page has", () => {
 test("resolvePromptArguments names the required arguments the page cannot fill", () => {
   // The user can fix an empty text box; they cannot fix a -32602.
   const prompt = { arguments: [ { name: "text", required: true }, { name: "dictionaries", required: true } ] }
-  const { args, missing } = resolvePromptArguments(prompt, { selected_dictionaries: () => [ "uberon" ] })
+  const { args, missing } = resolvePromptArguments(prompt, { selected_dictionaries: { description: "chosen dictionaries", read: () => [ "uberon" ] } })
   assert.deepEqual(args, { dictionaries: "uberon" })
   assert.deepEqual(missing, [ "text" ])
 })
@@ -1302,7 +1319,7 @@ test("the element reads its config through config.js rather than inlining it", (
 
 test("promptArgumentSummary shows which slots the page can already fill", () => {
   const prompt = { arguments: [ { name: "text", required: false }, { name: "dictionaries", required: false } ] }
-  const summary = promptArgumentSummary(prompt, { text: () => "The stomach was examined." })
+  const summary = promptArgumentSummary(prompt, { text: { description: "the text to annotate", read: () => "The stomach was examined." } })
 
   assert.deepEqual(summary.map((s) => [ s.name, s.filled ]), [ [ "text", true ], [ "dictionaries", false ] ])
   assert.equal(summary[0].value, "The stomach was examined.")

@@ -20,6 +20,7 @@ const HUB = "https://hub.example"
 
 // What the stub hub answers with. Tests mutate this before mounting.
 let hubServers = []
+let sentBodies = []
 
 function installGlobals() {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://host.example/page" })
@@ -30,8 +31,13 @@ function installGlobals() {
   }
   globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
   globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0)
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, init = {}) => {
     const u = String(url)
+    if (u.includes("single_llm_calls")) {
+      sentBodies.push(JSON.parse(init.body || "{}"))
+      return new Response('event: done\ndata: {"content":"ok","finish_reason":"stop"}\n\n',
+                          { status: 200, headers: { "Content-Type": "text/event-stream" } })
+    }
     const json = (body) => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) })
     if (u.includes("/api/llms"))        return json({ llms: [ { models: [ { value: "m1" }, { value: "m2" } ] } ] })
     if (/\/api\/mcp_servers\/[^/]+\/tools/.test(u)) {
@@ -64,7 +70,7 @@ async function mount(attrs = {}, settle = 60) {
 }
 
 before(() => { assert.ok(customElements.get("llm-meta-widget"), "the bundle should register the element") })
-beforeEach(() => { hubServers = [] })
+beforeEach(() => { hubServers = []; sentBodies = [] })
 
 test("the rendered panel shows no template syntax", async () => {
   const panel = await mount()
@@ -130,3 +136,117 @@ test("a pre-configured remote tool survives the picker's first render", async ()
   assert.deepEqual(checked, [ "222" ], "the pre-configured tool must still be selected after the picker renders")
   assert.equal(panel.querySelector(".lmw-tools-count").textContent, "1", "and must be counted")
 })
+
+// --- state readers (0.8.0 object shape) -------------------------------------
+
+// Send one turn and return the system prompt the model was given.
+async function systemPromptAfterATurn(panel) {
+  const input = panel.querySelector(".lmw-input")
+  input.value = "hello"
+  input.dispatchEvent(new window.Event("input", { bubbles: true }))
+  panel.querySelector(".lmw-form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(120)
+  const body = sentBodies.at(-1)
+  const system = (body?.messages || []).find((m) => m.role === "system")
+  return system?.content || ""
+}
+
+test("a reader's description reaches the model next to its value", async () => {
+  window.aiState = {
+    annotation_mode: {
+      description: "whether matches are replaced or added to existing ones",
+      read: () => "append"
+    }
+  }
+  const panel = await mount()
+  const prompt = await systemPromptAfterATurn(panel)
+  // Description and value together on one line — the model should not have to
+  // match a name against a glossary printed somewhere else in the prompt.
+  assert.match(prompt, /- annotation_mode \(whether matches are replaced or added to existing ones\): "append"/)
+  delete window.aiState
+})
+
+test("a bare function is refused by name, and the other readers still work", async () => {
+  const errors = []
+  const realError = console.error
+  console.error = (...a) => errors.push(a.join(" "))
+  try {
+    window.aiState = {
+      legacy_reader: () => "from the removed 0.7 form",
+      pending_merges: { description: "merges awaiting confirmation", read: () => 3 }
+    }
+    const panel = await mount()
+    const prompt = await systemPromptAfterATurn(panel)
+
+    // Named, and told what the shape should be.
+    assert.ok(errors.some((e) => e.includes("legacy_reader") && e.includes("bare function")),
+              `expected an error naming the key; got ${JSON.stringify(errors)}`)
+    // Skipped, not guessed at.
+    assert.doesNotMatch(prompt, /legacy_reader/)
+    assert.doesNotMatch(prompt, /from the removed 0.7 form/)
+    // One bad entry must not take the page's good readers down with it.
+    assert.match(prompt, /- pending_merges \(merges awaiting confirmation\): 3/)
+  } finally {
+    console.error = realError
+    delete window.aiState
+  }
+})
+
+test("an object missing read is refused too, and says which field is missing", async () => {
+  const errors = []
+  const realError = console.error
+  console.error = (...a) => errors.push(a.join(" "))
+  try {
+    window.aiState = { half_declared: { description: "declared but unreadable" } }
+    const panel = await mount()
+    const prompt = await systemPromptAfterATurn(panel)
+    assert.ok(errors.some((e) => e.includes("half_declared") && e.includes("missing read")),
+              `expected the message to name the missing field; got ${JSON.stringify(errors)}`)
+    assert.doesNotMatch(prompt, /half_declared/)
+  } finally {
+    console.error = realError
+    delete window.aiState
+  }
+})
+
+test("an object missing description is refused, and says which field is missing", async () => {
+  const errors = []
+  const realError = console.error
+  console.error = (...a) => errors.push(a.join(" "))
+  try {
+    window.aiState = { unlabelled: { read: () => "a value with no stated meaning" } }
+    const panel = await mount()
+    const prompt = await systemPromptAfterATurn(panel)
+    assert.ok(errors.some((e) => e.includes("unlabelled") && e.includes("missing description")),
+              `expected the message to name the missing field; got ${JSON.stringify(errors)}`)
+    assert.doesNotMatch(prompt, /unlabelled/)
+    assert.doesNotMatch(prompt, /a value with no stated meaning/)
+  } finally {
+    console.error = realError
+    delete window.aiState
+  }
+})
+
+test("a page that declares no state says so, rather than showing an empty block", async () => {
+  // An empty "Current page state:" heading reads as "this page has no state I can
+  // see", which is a different claim from "this page declares none".
+  delete window.aiState
+  const panel = await mount()
+  const prompt = await systemPromptAfterATurn(panel)
+  assert.match(prompt, /\(this page declares no state\)/)
+})
+
+test("a reader that throws reports the error in place of its value", async () => {
+  // The page's bug must not take down the turn, and must not look like a real
+  // value either — the model is told that this one reader failed.
+  window.aiState = {
+    broken:  { description: "a reader with a bug", read: () => { throw new Error("page bug") } },
+    healthy: { description: "a reader that works", read: () => "fine" }
+  }
+  const panel = await mount()
+  const prompt = await systemPromptAfterATurn(panel)
+  assert.match(prompt, /- broken \(a reader with a bug\): "<error: page bug>"/)
+  assert.match(prompt, /- healthy \(a reader that works\): "fine"/)
+  delete window.aiState
+})
+

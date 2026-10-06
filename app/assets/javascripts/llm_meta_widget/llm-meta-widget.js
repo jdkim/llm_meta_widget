@@ -642,7 +642,8 @@ async function resourceLinesForTurn({ plan, cached, endpoint, read, budgetBytes 
 }
 var PROMPT_ARG_ALIASES = { dictionaries: "selected_dictionaries" };
 function promptArgFromState(argName, state) {
-  const reader = state && state[argName] || state && state[PROMPT_ARG_ALIASES[argName]];
+  const entry = state && state[argName] || state && state[PROMPT_ARG_ALIASES[argName]];
+  const reader = entry && typeof entry.read === "function" ? entry.read : null;
   if (typeof reader !== "function") return "";
   let value;
   try {
@@ -4266,17 +4267,51 @@ function boot(cfg) {
     currentThinkingBlock = null;
     currentThinkingBody = null;
   }
-  function currentPageState() {
-    var reader = window[STATE_GLOBAL] || {};
-    var out = {};
-    Object.keys(reader).forEach(function(k) {
-      try {
-        out[k] = reader[k]();
-      } catch (e) {
-        out[k] = "<error: " + e.message + ">";
+  function stateReaders() {
+    var declared = window[STATE_GLOBAL] || {};
+    var out = [];
+    Object.keys(declared).forEach(function(key) {
+      var entry = declared[key];
+      var hasDescription = entry && typeof entry.description === "string" && entry.description.trim() !== "";
+      var hasRead = entry && typeof entry.read === "function";
+      if (!hasDescription || !hasRead) {
+        console.error(
+          "[llm-meta-widget] " + STATE_GLOBAL + "." + key + ' is not a valid state reader. Expected { description: "what this value is", read: function () { \u2026 } }, got ' + (typeof entry === "function" ? "a bare function (the 0.7 form, removed in 0.8)" : describeValue(entry)) + ". Skipping " + key + "."
+        );
+        return;
       }
+      out.push({ key, description: entry.description, read: entry.read });
     });
     return out;
+  }
+  function describeValue(v) {
+    if (v === null) return "null";
+    if (Array.isArray(v)) return "an array";
+    if (typeof v === "object") {
+      var missing = [];
+      if (typeof v.description !== "string" || v.description.trim() === "") missing.push("description");
+      if (typeof v.read !== "function") missing.push("read");
+      return "an object missing " + missing.join(" and ");
+    }
+    return typeof v;
+  }
+  function currentPageState() {
+    return stateReaders().map(function(r) {
+      var value;
+      try {
+        value = r.read();
+      } catch (e) {
+        value = "<error: " + e.message + ">";
+      }
+      return { key: r.key, description: r.description, value };
+    });
+  }
+  function pageStateLines() {
+    var readers = currentPageState();
+    if (readers.length === 0) return ["(this page declares no state)"];
+    return readers.map(function(r) {
+      return "- " + r.key + " (" + r.description + "): " + JSON.stringify(r.value);
+    });
   }
   function currentSystemPrompt(resourceLines) {
     return [
@@ -4288,9 +4323,8 @@ function boot(cfg) {
       "3. After a tool returns a result, use it: either take the next step the task needs, or \u2014 if the task is done \u2014 answer in plain text. Do not stop silently after a tool call.",
       "4. NEVER repeat a call you have already made with the same or similar arguments \u2014 its result is already in the conversation history.",
       "",
-      "Current page state:",
-      JSON.stringify(currentPageState(), null, 2)
-    ].concat(resourceLines || []).join("\n");
+      "Current page state:"
+    ].concat(pageStateLines()).concat(resourceLines || []).join("\n");
   }
   async function resourceLinesForThisTurn() {
     var turn = await resourceLinesForTurn({
