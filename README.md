@@ -2,9 +2,15 @@
 
 Embeddable browser chat widget for the [llm_meta](https://github.com/pubannotation) ecosystem.
 
-Client-orchestrated: the widget fetches host-side action schemas + host-published `.well-known/mcp.json` manifests at boot, dispatches tool_calls locally (page-embedded actions) or directly to MCP endpoints (host-wide well-known), and consumes the meta-server's SSE `single_llm_calls` API. Ships as a custom element in one self-contained ES module — on npm for any host, and in a Rails gem whose helper serves the identical file.
+The browser does the orchestrating. At boot the widget reads the tools your page
+declares and any `.well-known/mcp.json` your host publishes. When the model calls
+a tool, the widget runs it: in the page itself, or against an MCP endpoint
+directly. Only the chat goes through the meta-server, over SSE.
 
-**No** Devise, DB migrations, ChatManager, or PromptNavigator. The gem adds only `rails >= 8.0` as a runtime dep — so hosts that haven't bumped to 8.1 can adopt it without a Rails upgrade — and hosts that are not Rails at all skip the gem entirely.
+It ships as a custom element in one self-contained ES module. The same file is on
+npm for any host, and in a Rails gem whose helper serves it for you.
+
+**No** Devise, DB migrations, ChatManager, or PromptNavigator. The gem adds only `rails >= 8.0` as a runtime dep — so hosts that haven't bumped to 8.1 can adopt it without a Rails upgrade — and hosts that do not use Rails do not need the gem.
 
 ## What you need first
 
@@ -37,7 +43,7 @@ that section.
 | Your app | What you add | What you write |
 |---|---|---|
 | **Rails** | the gem, one line in your `Gemfile` | one helper call in a view. The helper writes the `<llm-meta-widget>` tag for you, so you never write that tag yourself |
-| **Anything else** — Python, Go, PHP, plain HTML… | one `<script>` tag from the CDN | the `<llm-meta-widget>` tag yourself |
+| **Anything else** — Python, Go, PHP, plain HTML… | one `<script>` tag from the CDN, or an npm dependency you bundle | the `<llm-meta-widget>` tag yourself |
 
 Both ways load the same file and run the same widget.
 
@@ -108,7 +114,7 @@ Two more things worth knowing before you go further:
 - The model name is the hub's name for it (`GET /api/llms` lists them), not
   the provider's.
 
-Once that works, the widget can converse but cannot *do* anything. To let the
+Once that works, the widget can talk, but it cannot *do* anything yet. To let the
 LLM act on your page or call your own services, declare tools using any of the
 **three tool classes** below.
 
@@ -135,37 +141,73 @@ instead of ERB. Both produce the same widget, so the advice in that section
 — CORS, a reachable `llm_url`, the hub's name for the model — applies here
 too.
 
-**`@0.8` is a range, and it stops at 0.8.x on purpose.** You get patches without
-touching your page, and you do not get a breaking release by surprise. The cost
-is that moving to 0.9 is a deliberate edit: read [CHANGELOG.md](CHANGELOG.md)
-first, because a major-or-minor bump here is where the page's own contract can
-change — 0.8.0 changed the shape of `window.aiState`, and a page that followed
-the new documentation while still loading `@0.7` would have had every state
-value silently replaced by an error string. Rails hosts are protected from that
-mismatch by the Gemfile constraint; a CDN embed has no such guard, so the
-version in that URL is the guard.
+**`@0.8` is a version range, and it stops at 0.8.x on purpose.** You receive bug
+fixes without editing your page, and a release that breaks your page cannot
+arrive on its own.
+
+Moving to 0.9 is therefore a change you make yourself. Read
+[CHANGELOG.md](CHANGELOG.md) before you do, because this is where what your page
+must provide can change. For example, 0.8.0 changed the shape of
+`window.aiState`. A page that used the new shape while still loading `@0.7`
+would have shown an error string in place of every value, with no other warning.
+
+A Rails app is protected from that mismatch, because the `Gemfile` will not
+resolve a widget version the page cannot use. A page that loads the widget from
+the CDN has no such check, so the version you write in that URL is the only
+protection you have.
 
 Nothing else is needed: the stylesheets and the markdown renderer are bundled
 in, and the element injects its own styles. The host serves no CSS and no JS.
 
-Three ways to get that one file, in descending order of convenience:
+### If you have a JS build pipeline, install it instead
+
+Vite, webpack, esbuild, Next.js, SvelteKit, Astro — if your app already builds
+JavaScript, take the widget as a dependency rather than a script tag:
+
+```bash
+npm install @aibranch/llm-meta-widget
+```
+
+```js
+// Once, at your app's entry point. Importing the package is all you need: it
+// defines the custom element. There is no function to call and nothing to name.
+import "@aibranch/llm-meta-widget";
+```
+
+Then write the `<llm-meta-widget>` tag exactly as above — same attributes, same
+behaviour.
+
+**Why do this, when the script tag is only one line?** Because your build then
+checks the version for you. The version is pinned in your lockfile and installed by `npm ci`
+with integrity checking, so you know which widget your page runs and your
+colleague's build runs the same one. On the CDN path the version lives in a URL
+that nothing checks. That matters most at a breaking release: 0.8.0 changed the
+shape of `window.aiState`, and a lockfile makes the upgrade a deliberate, visible
+step instead of a URL someone edits.
+
+The only cost is that this path needs a build pipeline. The CDN path needs none,
+which is why it is listed first.
+
+Four ways to get that one file, in descending order of convenience:
 
 - **the CDN**, as above — `@aibranch/llm-meta-widget` on npm, no path needed
   because the package's `main` is the bundle;
+- **npm install plus your own bundler**, as above — the same package, resolved
+  through `exports` and pinned by your lockfile;
 - **the gem**, which serves the identical file at
   `/llm_meta_widget_assets/llm-meta-widget.js` for Rails hosts, and is what the
   `llm_meta_widget` helper points at;
 - **self-hosted** — copy it out of the package or the gem and serve it as a
   static asset, if you would rather not depend on a CDN.
 
-Going without the gem removes the Rails pieces — the helper and the partial.
-It does not remove your page's own contract, because those parts belong to the
-page rather than to Rails: the `#ai-actions` JSON block, `window.aiState` and
-`window.aiActions` are declared exactly as they are under Rails (see the three
-tool classes below).
+Going without the gem removes the Rails parts: the helper and the partial. It
+does not change what your page itself must provide, because those parts belong to
+the page, not to Rails. You declare the `#ai-actions` JSON block, `window.aiState`
+and `window.aiActions` exactly as a Rails page does — see the three tool classes
+below.
 
-**Attributes** map one-to-one onto the helper's keyword options. Three are not
-obvious and are the ones that bite:
+**Attributes** match the helper's keyword options one to one. Three of them are
+easy to get wrong:
 
 | attribute | notes |
 |---|---|
@@ -176,11 +218,11 @@ obvious and are the ones that bite:
 | `actions-schema-id`, `state-global`, `actions-global`, `remote-tools-schema-id` | as the helper options |
 | `models`, `hub-tools` | comma-separated. Omitted **or empty** means no allowlist — an allowlist permitting nothing is never what anyone meant |
 | `enable-model-picker`, `enable-tool-picker` | **value attributes, not boolean attributes.** They default to true, so presence cannot mean true. Disable with `enable-tool-picker="false"`; any other value is true |
-| `well-known-urls` | **tri-state**, because an attribute cannot express nil-versus-empty: omitted = auto-discover same-origin `/.well-known/mcp.json`; `""` = discovery off; `"a,b"` = fetch those |
+| `well-known-urls` | **Three different states**, because an attribute cannot tell "not set" from "set to empty": omitted = auto-discover same-origin `/.well-known/mcp.json`; `""` = discovery off; `"a,b"` = fetch those |
 
-That last one is the quiet failure to watch for: expecting discovery off and
-getting a same-origin fetch looks like nothing at all, except a 404 in the
-console.
+The last one fails quietly. If you expect discovery to be off but leave the
+attribute out, the widget fetches your own origin instead. Nothing appears to
+happen, except a 404 in the browser console.
 
 One widget per page. The panel uses fixed element ids, so a second
 `<llm-meta-widget>` is ignored with a console warning rather than fighting the
