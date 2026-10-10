@@ -3272,6 +3272,18 @@ var panel_default = `/* The chat panel's own styles. Extracted from _chat_panel.
 	}
 	#llm-meta-widget-chat .lmw-title { font-weight: 600; color: #1f2937; }
 
+	/* Attribution back to the service that answers these chats. The header is
+	 * \`space-between\` with two children, so the title and the link travel
+	 * together in one group \u2014 otherwise the link lands in the middle of the
+	 * bar, visually detached from the title it qualifies. */
+	#llm-meta-widget-chat .lmw-title-group {
+		display: flex; align-items: baseline; gap: 6px; min-width: 0;
+	}
+	#llm-meta-widget-chat .lmw-powered {
+		font-size: 11px; color: #6b7280; text-decoration: none; white-space: nowrap;
+	}
+	#llm-meta-widget-chat .lmw-powered:hover { color: #2563eb; text-decoration: underline; }
+
 	/* Level-1 model picker \u2014 compact <select> next to the title.
 	 * Populated by JS on widget open from GET /api/llms (anon path
 	 * returns Ollama-only). Hidden entirely if enable_model_picker
@@ -3557,7 +3569,10 @@ var MARKUP = `
 
 <div id="llm-meta-widget-chat" class="llm-meta-conversation">
 	<div class="lmw-header">
-		<span class="lmw-title">AI assistant</span>
+		<span class="lmw-title-group">
+			<span class="lmw-title">AI assistant</span>
+			<a class="lmw-powered" href="https://chat.aibranch.org/" target="_blank" rel="noopener noreferrer">(powered by AIbranch)</a>
+		</span>
 		<div class="lmw-header-right">
 			<button type="button" class="lmw-clear" title="Clear conversation">clear</button>
 			<button type="button" class="lmw-hide" title="Hide">\u2212</button>

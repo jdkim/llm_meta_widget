@@ -42,7 +42,10 @@ const MARKUP = `
 
 <div id="llm-meta-widget-chat" class="llm-meta-conversation">
 	<div class="lmw-header">
-		<span class="lmw-title">AI assistant</span>
+		<span class="lmw-title-group">
+			<span class="lmw-title">AI assistant</span>
+			<a class="lmw-powered" href="https://chat.aibranch.org/" target="_blank" rel="noopener noreferrer">(powered by AIbranch)</a>
+		</span>
 		<div class="lmw-header-right">
 			<button type="button" class="lmw-clear" title="Clear conversation">clear</button>
 			<button type="button" class="lmw-hide" title="Hide">−</button>

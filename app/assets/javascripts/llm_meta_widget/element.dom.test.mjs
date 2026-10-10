@@ -250,3 +250,29 @@ test("a reader that throws reports the error in place of its value", async () =>
   delete window.aiState
 })
 
+// The attribution link. The widget answers from a hub the visitor never sees,
+// so the panel is the only place that can say what is behind it — and on an
+// adopter's page it is the only mention of AIbranch at all.
+test("the header credits the service, linking out to it", async () => {
+  const panel = await mount()
+  const link = panel.querySelector(".lmw-powered")
+
+  assert.ok(link, "the panel should credit the service that answers it")
+  assert.equal(link.getAttribute("href"), "https://chat.aibranch.org/")
+  // It sits on someone else's page: never navigate their tab away, and never
+  // hand them the referrer-opener pair.
+  assert.equal(link.getAttribute("target"), "_blank")
+  assert.match(link.getAttribute("rel") || "", /noopener/)
+})
+
+test("the credit travels with the title, not loose in the header bar", async () => {
+  const panel = await mount()
+  const group = panel.querySelector(".lmw-title-group")
+
+  assert.ok(group, "title and credit should share one group")
+  assert.ok(group.querySelector(".lmw-title"), "the title belongs in the group")
+  assert.ok(group.querySelector(".lmw-powered"), "the credit belongs in the group")
+  // The header is space-between with two children. A third child would be
+  // pushed to the centre, away from the title it qualifies.
+  assert.equal(panel.querySelector(".lmw-header").children.length, 2)
+})
