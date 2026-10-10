@@ -255,9 +255,16 @@ test("a reader that throws reports the error in place of its value", async () =>
 // adopter's page it is the only mention of AIbranch at all.
 test("the header credits the service, linking out to it", async () => {
   const panel = await mount()
-  const link = panel.querySelector(".lmw-powered")
+  const credit = panel.querySelector(".lmw-powered")
+  const link = credit && credit.querySelector("a")
 
-  assert.ok(link, "the panel should credit the service that answers it")
+  assert.ok(credit, "the panel should credit the service that answers it")
+  assert.ok(link, "the credit should carry a link")
+  // Only the NAME is clickable — "(powered by " and ")" stay plain text, so
+  // the link target is the word a reader would actually aim at.
+  assert.equal(link.textContent.trim(), "AIbranch")
+  assert.match(credit.textContent, /\(powered by AIbranch\)/)
+  assert.equal(credit.tagName, "SPAN", "the wrapper must not itself be a link")
   assert.equal(link.getAttribute("href"), "https://chat.aibranch.org/")
   // It sits on someone else's page: never navigate their tab away, and never
   // hand them the referrer-opener pair.

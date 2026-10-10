@@ -3279,10 +3279,13 @@ var panel_default = `/* The chat panel's own styles. Extracted from _chat_panel.
 	#llm-meta-widget-chat .lmw-title-group {
 		display: flex; align-items: baseline; gap: 6px; min-width: 0;
 	}
+	/* The wrapper is plain text; only the service NAME is clickable, so the
+	 * link target is the word a reader would aim at. */
 	#llm-meta-widget-chat .lmw-powered {
-		font-size: 11px; color: #6b7280; text-decoration: none; white-space: nowrap;
+		font-size: 11px; color: #6b7280; white-space: nowrap;
 	}
-	#llm-meta-widget-chat .lmw-powered:hover { color: #2563eb; text-decoration: underline; }
+	#llm-meta-widget-chat .lmw-powered a { color: inherit; text-decoration: underline; }
+	#llm-meta-widget-chat .lmw-powered a:hover { color: #2563eb; }
 
 	/* Level-1 model picker \u2014 compact <select> next to the title.
 	 * Populated by JS on widget open from GET /api/llms (anon path
@@ -3571,7 +3574,7 @@ var MARKUP = `
 	<div class="lmw-header">
 		<span class="lmw-title-group">
 			<span class="lmw-title">AI assistant</span>
-			<a class="lmw-powered" href="https://chat.aibranch.org/" target="_blank" rel="noopener noreferrer">(powered by AIbranch)</a>
+			<span class="lmw-powered">(powered by <a href="https://chat.aibranch.org/" target="_blank" rel="noopener noreferrer">AIbranch</a>)</span>
 		</span>
 		<div class="lmw-header-right">
 			<button type="button" class="lmw-clear" title="Clear conversation">clear</button>
