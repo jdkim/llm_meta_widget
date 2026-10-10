@@ -408,6 +408,13 @@ function boot(cfg) {
   					(payload.llms || []).forEach(function(llm) {
   						if (llm.family !== "ollama") return;
   						(llm.available_models || []).forEach(function(m) {
+  							// This widget exists to call tools — page actions and MCP. A model
+  							// that declares no tool support fails hard the moment any tool is
+  							// declared ("<model> does not support tools"), so offering it in the
+  							// picker is a trap: the visitor picks it and the next turn errors.
+  							// `=== false` on purpose — a hub that omits the field is older, not
+  							// a claim of no support, and must keep working.
+  							if (m.supports_tools === false) return;
   							if (anyAllowedByAllowlist(m.value, MODEL_ALLOWLIST)) {
   								flat.push({ value: m.value, label: m.label });
   							}

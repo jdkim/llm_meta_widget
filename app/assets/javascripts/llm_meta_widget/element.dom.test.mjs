@@ -21,6 +21,8 @@ const HUB = "https://hub.example"
 // What the stub hub answers with. Tests mutate this before mounting.
 let hubServers = []
 let sentBodies = []
+// Set to override the /api/llms answer for one test.
+let hubLlms = null
 
 function installGlobals() {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://host.example/page" })
@@ -39,7 +41,7 @@ function installGlobals() {
                           { status: 200, headers: { "Content-Type": "text/event-stream" } })
     }
     const json = (body) => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) })
-    if (u.includes("/api/llms"))        return json({ llms: [ { models: [ { value: "m1" }, { value: "m2" } ] } ] })
+    if (u.includes("/api/llms"))        return json(hubLlms || { llms: [ { models: [ { value: "m1" }, { value: "m2" } ] } ] })
     if (/\/api\/mcp_servers\/[^/]+\/tools/.test(u)) {
       const uuid = u.match(/mcp_servers\/([^/]+)\/tools/)[1]
       const s = hubServers.find((x) => x.uuid === uuid)
@@ -70,7 +72,7 @@ async function mount(attrs = {}, settle = 60) {
 }
 
 before(() => { assert.ok(customElements.get("llm-meta-widget"), "the bundle should register the element") })
-beforeEach(() => { hubServers = []; sentBodies = [] })
+beforeEach(() => { hubServers = []; sentBodies = []; hubLlms = null })
 
 test("the rendered panel shows no template syntax", async () => {
   const panel = await mount()
@@ -282,4 +284,50 @@ test("the credit travels with the title, not loose in the header bar", async () 
   // The header is space-between with two children. A third child would be
   // pushed to the centre, away from the title it qualifies.
   assert.equal(panel.querySelector(".lmw-header").children.length, 2)
+})
+
+// The picker offers only models that can do what the widget is for.
+//
+// medgemma is free and local, so it was listed — and picking it ended the next
+// turn with `internal_error: medgemma1.5:4b does not support tools`, because
+// every turn here declares page actions. The hub already reports the
+// capability; the picker simply ignored it.
+const ollamaFamily = (models) => ({ llms: [ { family: "ollama", available_models: models } ] })
+
+test("the model picker hides a model that cannot call tools", async () => {
+  hubLlms = ollamaFamily([
+    { value: "tooly",   label: "tooly",   supports_tools: true },
+    { value: "notools", label: "notools", supports_tools: false },
+  ])
+
+  const panel = await mount({ "tool-hub-url": HUB, model: "tooly" })
+  const offered = [ ...panel.querySelectorAll(".lmw-model-picker option") ].map((o) => o.value)
+
+  assert.ok(offered.includes("tooly"), `tool-capable model should be offered: ${offered}`)
+  assert.ok(!offered.includes("notools"), `a model that cannot call tools must not be offered: ${offered}`)
+})
+
+test("a hub that does not report the capability still gets its models listed", async () => {
+  // Older hubs omit supports_tools entirely. Absent is not a claim of "no".
+  // NOT the configured model: that one is unshifted back in regardless, which
+  // would mask the filter and let this pass for the wrong reason.
+  hubLlms = ollamaFamily([
+    { value: "configured", label: "configured", supports_tools: true },
+    { value: "legacy",     label: "legacy" },
+  ])
+
+  const panel = await mount({ "tool-hub-url": HUB, model: "configured" })
+  const offered = [ ...panel.querySelectorAll(".lmw-model-picker option") ].map((o) => o.value)
+
+  assert.ok(offered.includes("legacy"), `absent capability must not hide a model: ${offered}`)
+})
+
+test("the host's configured model is kept even if it cannot call tools", async () => {
+  // The escape hatch: a deployment with no tools at all can still name one.
+  hubLlms = ollamaFamily([ { value: "notools", label: "notools", supports_tools: false } ])
+
+  const panel = await mount({ "tool-hub-url": HUB, model: "notools" })
+  const offered = [ ...panel.querySelectorAll(".lmw-model-picker option") ].map((o) => o.value)
+
+  assert.ok(offered.includes("notools"), `the configured model must never vanish: ${offered}`)
 })

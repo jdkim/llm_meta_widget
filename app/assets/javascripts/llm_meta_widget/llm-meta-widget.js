@@ -3868,6 +3868,7 @@ function boot(cfg) {
         (payload.llms || []).forEach(function(llm) {
           if (llm.family !== "ollama") return;
           (llm.available_models || []).forEach(function(m) {
+            if (m.supports_tools === false) return;
             if (anyAllowedByAllowlist(m.value, MODEL_ALLOWLIST)) {
               flat.push({ value: m.value, label: m.label });
             }
