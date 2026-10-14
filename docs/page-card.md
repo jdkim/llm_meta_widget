@@ -63,11 +63,20 @@ be read once and kept, next to small volatile ones re-read each turn.
 
 ## Three decisions to settle before code
 
-**1. URI scheme for page resources. — DECIDED: `page:`.** An `https:` URI that no
-HTTP request can fetch would mislead, so page resources are addressed
-`page:/annotation/selected_dictionaries`. The README must say the scheme is
-**experimental and subject to change**: it is not registered, and nothing outside
-this widget assigns it meaning yet.
+**1. URI scheme for page resources. — DECIDED: `page:<name>`.** The spec requires a
+URI (RFC 3986) and explicitly sanctions custom schemes; it also says `https://` is
+for resources the client can fetch from the web on its own, which these are not —
+so a custom scheme is the documented path here, not a workaround.
+
+**No path hierarchy**: `page:selected_dictionaries`, not
+`page:/annotation/selected_dictionaries`. A page has one namespace, and the widget
+only ever has to tell one resource from another inside the document it already
+lives in; an invented directory carries nothing. The identifier is therefore the
+fragment plus the single token the protocol requires. A bare `#name` would be a
+relative reference rather than a URI, so it cannot be used however well it reads.
+
+The README must still say the scheme is **experimental and subject to change**: it
+is not registered, and nothing outside this widget assigns it meaning yet.
 
 **2 and 3 — DECIDED, by one rule.** The card is JSON and cannot hold a getter, so
 behaviour attaches beside it: **the card declares; a global map keyed by the

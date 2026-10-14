@@ -486,9 +486,9 @@ test("a page prompt with no handler reports it instead of sending an empty turn"
 // ---- page resources, end to end -----------------------------------------
 
 test("a card-declared resource reaches the system prompt with its description", async () => {
-  window.aiResources = { "page:/annotation/text": () => "carpal tunnel syndrome" }
+  window.aiResources = { "page:text": () => "carpal tunnel syndrome" }
   await mountWithPage({ card: { resources: [
-    { uri: "page:/annotation/text", name: "Text", description: "the text to annotate" }
+    { uri: "page:text", name: "Text", description: "the text to annotate" }
   ] } })
 
   const panel = document.getElementById("llm-meta-widget-chat")
@@ -500,9 +500,9 @@ test("a card-declared resource reaches the system prompt with its description", 
 
 test("a volatile page resource is re-read on the second turn", async () => {
   let n = 0
-  window.aiResources = { "page:/annotation/text": () => "value " + (++n) }
+  window.aiResources = { "page:text": () => "value " + (++n) }
   await mountWithPage({ card: { resources: [
-    { uri: "page:/annotation/text", name: "Text", description: "d", volatility: "volatile" }
+    { uri: "page:text", name: "Text", description: "d", volatility: "volatile" }
   ] } })
 
   const panel = document.getElementById("llm-meta-widget-chat")
@@ -528,12 +528,12 @@ test("a page with no resources sends the same prompt it always did", async () =>
 // same claim as "the panel read from the renamed object". Only driving a turn
 // distinguishes them.
 test("resources-global points the panel at a renamed map", async () => {
-  window.myResources = { "page:/t": () => "from the renamed map" }
+  window.myResources = { "page:t": () => "from the renamed map" }
   document.body.innerHTML = ""
   const card = document.createElement("script")
   card.type = "application/json"; card.id = "ai-page"
   card.textContent = JSON.stringify({ _meta: { "io.modelcontextprotocol/static-primitives": {
-    resources: [ { uri: "page:/t", name: "T", description: "d" } ] } } })
+    resources: [ { uri: "page:t", name: "T", description: "d" } ] } } })
   document.body.appendChild(card)
   const el = document.createElement("llm-meta-widget")
   for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "", "resources-global": "myResources" })) {

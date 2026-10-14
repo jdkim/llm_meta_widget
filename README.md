@@ -216,6 +216,7 @@ easy to get wrong:
 | `llm-provider` | `llm_meta_server` (default) or `ollama` |
 | `api-key-uuid`, `greeting`, `max-rounds` | as the helper options |
 | `actions-schema-id`, `state-global`, `actions-global`, `remote-tools-schema-id` | as the helper options |
+| `page-card-id`, `prompts-global`, `resources-global` | as the helper options |
 | `models`, `hub-tools` | comma-separated. Omitted **or empty** means no allowlist — an allowlist permitting nothing is never what anyone meant |
 | `enable-model-picker`, `enable-tool-picker` | **value attributes, not boolean attributes.** They default to true, so presence cannot mean true. Disable with `enable-tool-picker="false"`; any other value is true |
 | `well-known-urls` | **Three different states**, because an attribute cannot tell "not set" from "set to empty": omitted = auto-discover same-origin `/.well-known/mcp.json`; `""` = discovery off; `"a,b"` = fetch those |
@@ -401,6 +402,9 @@ translate directly.
 | `api_key_uuid:` | `"ollama-local"` | Hub API-key uuid to invoke |
 | `element_path:` | `"/llm_meta_widget_assets/llm-meta-widget.js"` | The bundled element the page loads. Served by the gem's engine; override to load it from elsewhere |
 | `actions_schema_id:` | `"ai-actions"` | DOM id of the Class-3 schema block |
+| `page_card_id:` | `"ai-page"` | DOM id of the page card (see "The page card"). Its tools replace the `actions_schema_id` block |
+| `prompts_global:` | `"aiPrompts"` | Global object holding page prompt handlers, keyed by prompt name |
+| `resources_global:` | `"aiResources"` | Global object holding page resource readers, keyed by resource URI |
 | `state_global:` | `"aiState"` | Global window object holding Class-3 state readers, each `{ description, read }` (see the breaking change in 0.8.0) |
 | `actions_global:` | `"aiActions"` | Global window object holding Class-3 implementations |
 | `remote_tools_schema_id:` | `"remote-mcp-tools"` | DOM id of a JSON block listing Class-1 tools (`{id, name, description, input_schema}`) to start with. They seed the picker rather than bypassing it — shown ticked, and the visitor may untick them. Read once, at boot |
@@ -411,6 +415,59 @@ translate directly.
 | `enable_tool_picker:` | `true` | Show tool picker (Level-1). `false` removes it from the DOM |
 | `models:` | `nil` | Model-name allowlist; `nil` = all anon-available |
 | `hub_tools:` | `nil` | MCP-server-name allowlist; `nil` = all anon-public |
+
+## The page card
+
+Since 0.9.0 a page can declare what it offers in one block of JSON, instead of
+using a separate channel for each kind of thing. The block uses the same envelope
+an MCP server puts in its Server Card, so the page and the server describe
+themselves the same way.
+
+```html
+<script type="application/json" id="ai-page">
+{ "_meta": { "io.modelcontextprotocol/static-primitives": {
+    "tools":     [ { "name": "set_text", "description": "…", "inputSchema": { } } ],
+    "prompts":   [ { "name": "annotate", "description": "Annotate this page" } ],
+    "resources": [ { "uri": "page:text", "name": "Text", "description": "the text to annotate",
+                     "volatility": "volatile" } ]
+} } }
+</script>
+```
+
+The card says what exists. Three global objects say what it does, and each one is
+keyed by the identifier that the matching MCP operation takes:
+
+| declared in the card | implemented in | keyed by |
+|---|---|---|
+| `tools` | `window.aiActions` | tool `name`, as `tools/call` takes |
+| `prompts` | `window.aiPrompts` | prompt `name`, as `prompts/get` takes |
+| `resources` | `window.aiResources` | resource `uri`, as `resources/read` takes |
+
+```js
+window.aiActions   = { set_text: (args) => { /* change the page */ } }
+window.aiPrompts   = { annotate: (args) => "Annotate this: " + args.text }
+window.aiResources = { "page:text": () => document.querySelector("#text").value }
+```
+
+A prompt handler may return a plain string or the full `messages` array that
+`prompts/get` returns. A resource reader may return a string or any value that
+can be turned into JSON.
+
+**Resources carry two optional hints.** `volatility` is `"volatile"` when the
+value changes between turns, so the widget reads it again every turn; the default
+is `"stable"`, which is read once and reused. `autoAttach: false` keeps a resource
+out of the turn unless something asks for it. A `size` in bytes lets the widget
+decide whether the value fits its budget before reading it.
+
+**The `page:` scheme is experimental.** It is not a registered URI scheme, and
+nothing outside this widget gives it meaning. It is used because the protocol
+asks for a URI, and because `https://` is reserved for resources a client can
+fetch from the web by itself — which page resources are not. The form is
+`page:<name>` with no path, because a page has only one namespace. Expect this to
+change.
+
+**The card is optional.** A page that declares nothing keeps working exactly as
+before, and a page that declares no `tools` still uses its `ai-actions` block.
 
 ## Surviving navigation
 

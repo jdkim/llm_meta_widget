@@ -1741,12 +1741,12 @@ test("reads the three primitive arrays out of the envelope", () => {
   const card = readStaticPrimitivesCard(CARD({
     tools: [ { name: "set_text" } ],
     prompts: [ { name: "annotate" } ],
-    resources: [ { uri: "page:/text" } ]
+    resources: [ { uri: "page:text" } ]
   }), quiet)
 
   assert.deepEqual(card.tools.map((t) => t.name), [ "set_text" ])
   assert.deepEqual(card.prompts.map((p) => p.name), [ "annotate" ])
-  assert.deepEqual(card.resources.map((r) => r.uri), [ "page:/text" ])
+  assert.deepEqual(card.resources.map((r) => r.uri), [ "page:text" ])
 })
 
 test("a card with no envelope is ignored, not guessed at", () => {
@@ -1775,12 +1775,12 @@ test("tools and prompts are identified by name, resources by uri", () => {
   const card = readStaticPrimitivesCard(CARD({
     tools: [ { name: "ok" }, { description: "no name" } ],
     prompts: [ { name: "ok" }, { description: "no name" } ],
-    resources: [ { uri: "page:/ok" }, { name: "no uri" } ]
+    resources: [ { uri: "page:ok" }, { name: "no uri" } ]
   }), quiet)
 
   assert.deepEqual(card.tools.map((t) => t.name), [ "ok" ])
   assert.deepEqual(card.prompts.map((p) => p.name), [ "ok" ])
-  assert.deepEqual(card.resources.map((r) => r.uri), [ "page:/ok" ])
+  assert.deepEqual(card.resources.map((r) => r.uri), [ "page:ok" ])
 })
 
 test("a dropped entry is reported, so a typo is visible", () => {
@@ -1864,26 +1864,26 @@ test("an async handler is awaited", async () => {
 // handler map keyed by URI reads them. A page declares SEVERAL — PD has six
 // readers — so unlike the hub's single reference resource these are planned
 // and rendered as a list.
-const pageEntry = (over = {}) => ({ uri: "page:/text", name: "Text", description: "the text", ...over })
+const pageEntry = (over = {}) => ({ uri: "page:text", name: "Text", description: "the text", ...over })
 
 test("every declared resource is planned, not just the first", () => {
   const plans = planPageResources({
-    entries: [ pageEntry(), pageEntry({ uri: "page:/dicts", name: "Dicts" }) ],
+    entries: [ pageEntry(), pageEntry({ uri: "page:dicts", name: "Dicts" }) ],
     budgetBytes: 8000
   })
 
-  assert.deepEqual(plans.map((p) => p.uri), [ "page:/text", "page:/dicts" ])
+  assert.deepEqual(plans.map((p) => p.uri), [ "page:text", "page:dicts" ])
 })
 
 test("an over-budget resource is dropped before anything is read", () => {
   const skipped = []
   const plans = planPageResources({
-    entries: [ pageEntry({ size: 99999 }), pageEntry({ uri: "page:/ok", size: 10 }) ],
+    entries: [ pageEntry({ size: 99999 }), pageEntry({ uri: "page:ok", size: 10 }) ],
     budgetBytes: 8000,
     onSkip: (p) => skipped.push(p.reason)
   })
 
-  assert.deepEqual(plans.map((p) => p.uri), [ "page:/ok" ])
+  assert.deepEqual(plans.map((p) => p.uri), [ "page:ok" ])
   assert.deepEqual(skipped, [ "over-budget" ])
 })
 
@@ -1902,13 +1902,13 @@ test("volatility is read from the entry itself, as a page card writes it", () =>
 
 test("a volatile resource is re-read each turn, a stable one is cached", async () => {
   const plans = planPageResources({
-    entries: [ pageEntry({ volatility: "volatile" }), pageEntry({ uri: "page:/dicts", name: "Dicts" }) ],
+    entries: [ pageEntry({ volatility: "volatile" }), pageEntry({ uri: "page:dicts", name: "Dicts" }) ],
     budgetBytes: 8000
   })
-  let reads = { "page:/text": 0, "page:/dicts": 0 }
+  let reads = { "page:text": 0, "page:dicts": 0 }
   const resources = {
-    "page:/text": () => { reads["page:/text"]++; return "text " + reads["page:/text"] },
-    "page:/dicts": () => { reads["page:/dicts"]++; return "dicts" }
+    "page:text": () => { reads["page:text"]++; return "text " + reads["page:text"] },
+    "page:dicts": () => { reads["page:dicts"]++; return "dicts" }
   }
 
   const t1 = await pageResourceLinesForTurn({ plans, resources, budgetBytes: 8000 })
@@ -1916,7 +1916,7 @@ test("a volatile resource is re-read each turn, a stable one is cached", async (
 
   assert.match(t1.lines[0], /text 1/)
   assert.match(t2.lines[0], /text 2/, "volatile must be re-read")
-  assert.equal(reads["page:/dicts"], 1, "stable must be read once and cached")
+  assert.equal(reads["page:dicts"], 1, "stable must be read once and cached")
 })
 
 test("a volatile resource is never served from a cache, even a seeded one", async () => {
@@ -1925,10 +1925,10 @@ test("a volatile resource is never served from a cache, even a seeded one", asyn
   // encodes the SEP's requirement ("SHOULD re-read it each time it attaches").
   // Seeding the cache is how that guarantee gets tested rather than assumed.
   const plans = planPageResources({ entries: [ pageEntry({ volatility: "volatile" }) ], budgetBytes: 8000 })
-  const resources = { "page:/text": () => "fresh" }
+  const resources = { "page:text": () => "fresh" }
 
   const out = await pageResourceLinesForTurn({
-    plans, resources, budgetBytes: 8000, cache: { "page:/text": "stale" }
+    plans, resources, budgetBytes: 8000, cache: { "page:text": "stale" }
   })
 
   assert.match(out.lines[0], /fresh/)
@@ -1942,7 +1942,7 @@ test("a resource is rendered with its description, one line each", () => {
 
 test("a non-string value is serialised", async () => {
   const plans = planPageResources({ entries: [ pageEntry() ], budgetBytes: 8000 })
-  const out = await pageResourceLinesForTurn({ plans, resources: { "page:/text": () => ({ a: 1 }) }, budgetBytes: 8000 })
+  const out = await pageResourceLinesForTurn({ plans, resources: { "page:text": () => ({ a: 1 }) }, budgetBytes: 8000 })
 
   assert.match(out.lines[0], /\{"a":1\}/)
 })
@@ -1954,7 +1954,7 @@ test("a resource that declares no size is still trimmed to the budget", async ()
   const plans = planPageResources({ entries: [ pageEntry() ], budgetBytes: 200 })
   const huge = "x".repeat(5000)
 
-  const out = await pageResourceLinesForTurn({ plans, resources: { "page:/text": () => huge }, budgetBytes: 200 })
+  const out = await pageResourceLinesForTurn({ plans, resources: { "page:text": () => huge }, budgetBytes: 200 })
 
   assert.ok(out.lines[0].length < 1000, "an undeclared-size reader must not land whole: " + out.lines[0].length)
 })
@@ -1968,9 +1968,9 @@ test("a declared resource with no handler is skipped, not fatal", async () => {
 
 test("a reader that throws costs its own line, not the turn", async () => {
   const plans = planPageResources({
-    entries: [ pageEntry(), pageEntry({ uri: "page:/ok", name: "Ok" }) ], budgetBytes: 8000
+    entries: [ pageEntry(), pageEntry({ uri: "page:ok", name: "Ok" }) ], budgetBytes: 8000
   })
-  const resources = { "page:/text": () => { throw new Error("boom") }, "page:/ok": () => "fine" }
+  const resources = { "page:text": () => { throw new Error("boom") }, "page:ok": () => "fine" }
 
   const out = await pageResourceLinesForTurn({ plans, resources, budgetBytes: 8000 })
 
@@ -1979,7 +1979,7 @@ test("a reader that throws costs its own line, not the turn", async () => {
 
 test("an async reader is awaited", async () => {
   const plans = planPageResources({ entries: [ pageEntry() ], budgetBytes: 8000 })
-  const out = await pageResourceLinesForTurn({ plans, resources: { "page:/text": async () => "later" }, budgetBytes: 8000 })
+  const out = await pageResourceLinesForTurn({ plans, resources: { "page:text": async () => "later" }, budgetBytes: 8000 })
 
   assert.match(out.lines[0], /later/)
 })
