@@ -127,14 +127,15 @@ test("max-rounds parses, and a non-number falls back rather than becoming NaN", 
 
 // --- shape -----------------------------------------------------------------
 
-test("returns exactly the sixteen keys the panel logic reads", () => {
+test("returns exactly the seventeen keys the panel logic reads", () => {
   // The logic moved from the ERB template unchanged, so it still reads these
   // names. A key going missing here would surface as an undefined deep inside
   // the panel rather than as a clear error.
   assert.deepEqual(Object.keys(readConfig(el(MINIMAL))).sort(), [
-    "ACTIONS_GLOBAL", "ACTIONS_SCHEMA_ID", "API_KEY_UUID", "ENABLE_MODEL_PICKER",
+    "ACTIONS_GLOBAL", "ACTIONS_SCHEMA_ID",
+    "API_KEY_UUID", "ENABLE_MODEL_PICKER",
     "ENABLE_TOOL_PICKER", "GREETING", "HUB_TOOLS_ALLOWLIST", "LLM_BASE",
-    "LLM_PROVIDER", "MAX_ROUNDS", "MODEL", "MODEL_ALLOWLIST",
+    "LLM_PROVIDER", "MAX_ROUNDS", "MODEL", "MODEL_ALLOWLIST", "PAGE_CARD_ID",
     "REMOTE_TOOLS_SCHEMA_ID", "STATE_GLOBAL", "TOOL_HUB_BASE", "WELL_KNOWN_URLS",
   ])
 })

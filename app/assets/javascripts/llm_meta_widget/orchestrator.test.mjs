@@ -20,7 +20,7 @@ import { resourceHints, planResourceAttachment, trimResourceText,
          STATIC_PRIMITIVES_META,
          parseSseStream, dispatchLocalToolCalls, runChatLoop, callMcpTool, fetchMcpManifest,
          listMcpPrompts, getMcpPrompt, listMcpResources, readMcpResource,
-         promptMessagesToText } from "./orchestrator.js"
+         promptMessagesToText, readStaticPrimitivesCard } from "./orchestrator.js"
 
 // --- fixtures --------------------------------------------------------------
 
@@ -1726,4 +1726,72 @@ test("the key ignores the query string, so a form submit keeps its conversation"
   assert.equal(before, after)
   assert.notEqual(before, conversationKeyFor({ pathname: "/dictionaries" }),
                   "a different page is a different conversation")
+})
+
+// ---- page card ----------------------------------------------------------
+//
+// The same static-primitives envelope a server puts in its Server Card, read
+// from a <script> in the page instead. Parsing only: what a declaration means
+// is resolved elsewhere. A card is host-authored, so a typo must cost that one
+// entry and never the assistant.
+const CARD = (ext) => JSON.stringify({ _meta: { "io.modelcontextprotocol/static-primitives": ext } })
+const quiet = () => {}
+
+test("reads the three primitive arrays out of the envelope", () => {
+  const card = readStaticPrimitivesCard(CARD({
+    tools: [ { name: "set_text" } ],
+    prompts: [ { name: "annotate" } ],
+    resources: [ { uri: "page:/text" } ]
+  }), quiet)
+
+  assert.deepEqual(card.tools.map((t) => t.name), [ "set_text" ])
+  assert.deepEqual(card.prompts.map((p) => p.name), [ "annotate" ])
+  assert.deepEqual(card.resources.map((r) => r.uri), [ "page:/text" ])
+})
+
+test("a card with no envelope is ignored, not guessed at", () => {
+  // Bare arrays at the top level are NOT the shape: the envelope is what makes
+  // it the same document a Server Card carries.
+  const card = readStaticPrimitivesCard(JSON.stringify({ tools: [ { name: "x" } ] }), quiet)
+
+  assert.deepEqual(card, { tools: [], prompts: [], resources: [] })
+})
+
+test("malformed JSON costs the card, not the turn", () => {
+  assert.deepEqual(readStaticPrimitivesCard("{not json", quiet),
+                   { tools: [], prompts: [], resources: [] })
+})
+
+test("an absent card is simply empty", () => {
+  for (const input of [ undefined, null, "", "   " ]) {
+    assert.deepEqual(readStaticPrimitivesCard(input, quiet),
+                     { tools: [], prompts: [], resources: [] })
+  }
+})
+
+test("tools and prompts are identified by name, resources by uri", () => {
+  // Each primitive is dropped on the identifier its own protocol operation
+  // takes: tools/call and prompts/get take a name, resources/read takes a uri.
+  const card = readStaticPrimitivesCard(CARD({
+    tools: [ { name: "ok" }, { description: "no name" } ],
+    prompts: [ { name: "ok" }, { description: "no name" } ],
+    resources: [ { uri: "page:/ok" }, { name: "no uri" } ]
+  }), quiet)
+
+  assert.deepEqual(card.tools.map((t) => t.name), [ "ok" ])
+  assert.deepEqual(card.prompts.map((p) => p.name), [ "ok" ])
+  assert.deepEqual(card.resources.map((r) => r.uri), [ "page:/ok" ])
+})
+
+test("a dropped entry is reported, so a typo is visible", () => {
+  const said = []
+  readStaticPrimitivesCard(CARD({ tools: [ { description: "no name" } ] }), (...a) => said.push(a.join(" ")))
+
+  assert.ok(said.some((m) => /dropping a tool/.test(m)), said)
+})
+
+test("a non-array primitive list is tolerated", () => {
+  const card = readStaticPrimitivesCard(CARD({ tools: "nonsense", resources: 7 }), quiet)
+
+  assert.deepEqual(card, { tools: [], prompts: [], resources: [] })
 })

@@ -39,6 +39,10 @@ module LlmMetaWidget
       # instead of this gem (same file, published to npm).
       element_path:            "/llm_meta_widget_assets/llm-meta-widget.js",
       actions_schema_id:       "ai-actions",
+      # The page card: the same static-primitives envelope a server puts in
+      # its Server Card, delivered in the document. Its `tools` replace the
+      # actions_schema_id block when the card declares any.
+      page_card_id:            "ai-page",
       state_global:            "aiState",
       actions_global:          "aiActions",
       remote_tools_schema_id:  "remote-mcp-tools",

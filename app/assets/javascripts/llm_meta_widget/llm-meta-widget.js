@@ -549,6 +549,37 @@ function parseSseFrame(raw) {
   return { name, data };
 }
 var STATIC_PRIMITIVES_META = "io.modelcontextprotocol/static-primitives";
+function readStaticPrimitivesCard(text, warn = console.warn) {
+  const empty = { tools: [], prompts: [], resources: [] };
+  if (typeof text !== "string" || text.trim() === "") return empty;
+  let doc;
+  try {
+    doc = JSON.parse(text);
+  } catch (e) {
+    warn("[llm-meta-widget] page card is not valid JSON; ignoring it:", e.message);
+    return empty;
+  }
+  const ext = doc && doc._meta && doc._meta[STATIC_PRIMITIVES_META] || null;
+  if (!ext) {
+    warn(`[llm-meta-widget] page card has no _meta["${STATIC_PRIMITIVES_META}"]; ignoring it`);
+    return empty;
+  }
+  const named = (arr, kind) => (Array.isArray(arr) ? arr : []).filter((e) => {
+    const ok = e && typeof e.name === "string" && e.name.trim() !== "";
+    if (!ok) warn(`[llm-meta-widget] page card: dropping a ${kind} with no name`);
+    return ok;
+  });
+  return {
+    tools: named(ext.tools, "tool"),
+    prompts: named(ext.prompts, "prompt"),
+    // Resources are addressed by uri, not name — resources/read takes the uri.
+    resources: (Array.isArray(ext.resources) ? ext.resources : []).filter((e) => {
+      const ok = e && typeof e.uri === "string" && e.uri.trim() !== "";
+      if (!ok) warn("[llm-meta-widget] page card: dropping a resource with no uri");
+      return ok;
+    })
+  };
+}
 var VOLATILITIES = ["stable", "volatile"];
 var usableSize = (n) => typeof n === "number" && isFinite(n) ? n : null;
 function resourceHints(entry) {
@@ -2904,6 +2935,7 @@ var lexer = _Lexer.lex;
 var DEFAULTS = Object.freeze({
   API_KEY_UUID: "ollama-local",
   ACTIONS_SCHEMA_ID: "ai-actions",
+  PAGE_CARD_ID: "ai-page",
   STATE_GLOBAL: "aiState",
   ACTIONS_GLOBAL: "aiActions",
   REMOTE_TOOLS_SCHEMA_ID: "remote-mcp-tools",
@@ -2939,6 +2971,7 @@ function readConfig(el) {
     API_KEY_UUID: str("api-key-uuid", DEFAULTS.API_KEY_UUID),
     MODEL: str("model", null),
     ACTIONS_SCHEMA_ID: str("actions-schema-id", DEFAULTS.ACTIONS_SCHEMA_ID),
+    PAGE_CARD_ID: str("page-card-id", DEFAULTS.PAGE_CARD_ID),
     GREETING: str("greeting", null),
     STATE_GLOBAL: str("state-global", DEFAULTS.STATE_GLOBAL),
     ACTIONS_GLOBAL: str("actions-global", DEFAULTS.ACTIONS_GLOBAL),
@@ -3658,6 +3691,7 @@ function boot(cfg) {
   var API_KEY_UUID = cfg.API_KEY_UUID;
   var MODEL = cfg.MODEL;
   var ACTIONS_SCHEMA_ID = cfg.ACTIONS_SCHEMA_ID;
+  var PAGE_CARD_ID = cfg.PAGE_CARD_ID;
   var GREETING = cfg.GREETING;
   var STATE_GLOBAL = cfg.STATE_GLOBAL;
   var ACTIONS_GLOBAL = cfg.ACTIONS_GLOBAL;
@@ -3791,8 +3825,10 @@ function boot(cfg) {
       model: MODEL
     });
   }
+  var pageCardEl = document.getElementById(PAGE_CARD_ID);
+  var pageCard = readStaticPrimitivesCard(pageCardEl ? pageCardEl.textContent : null);
   var actionsSchemaEl = document.getElementById(ACTIONS_SCHEMA_ID);
-  var localTools = actionsSchemaEl ? JSON.parse(actionsSchemaEl.textContent) : [];
+  var localTools = pageCard.tools.length ? pageCard.tools : actionsSchemaEl ? JSON.parse(actionsSchemaEl.textContent) : [];
   var remoteToolsEl = document.getElementById(REMOTE_TOOLS_SCHEMA_ID);
   var baselineRemoteTools = remoteToolsEl ? JSON.parse(remoteToolsEl.textContent) : [];
   var remoteTools = baselineRemoteTools.slice();

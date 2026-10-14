@@ -26,6 +26,7 @@
 export const DEFAULTS = Object.freeze({
   API_KEY_UUID:           "ollama-local",
   ACTIONS_SCHEMA_ID:      "ai-actions",
+  PAGE_CARD_ID:           "ai-page",
   STATE_GLOBAL:           "aiState",
   ACTIONS_GLOBAL:         "aiActions",
   REMOTE_TOOLS_SCHEMA_ID: "remote-mcp-tools",
@@ -59,6 +60,7 @@ export function readConfig(el) {
     API_KEY_UUID:           str("api-key-uuid", DEFAULTS.API_KEY_UUID),
     MODEL:                  str("model", null),
     ACTIONS_SCHEMA_ID:      str("actions-schema-id", DEFAULTS.ACTIONS_SCHEMA_ID),
+    PAGE_CARD_ID:           str("page-card-id", DEFAULTS.PAGE_CARD_ID),
     GREETING:               str("greeting", null),
     STATE_GLOBAL:           str("state-global", DEFAULTS.STATE_GLOBAL),
     ACTIONS_GLOBAL:         str("actions-global", DEFAULTS.ACTIONS_GLOBAL),

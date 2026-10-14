@@ -840,6 +840,59 @@ function parseSseFrame(raw) {
 // the first turn only.
 export const STATIC_PRIMITIVES_META = "io.modelcontextprotocol/static-primitives"
 
+// ---- page card --------------------------------------------------------
+//
+// The same `io.modelcontextprotocol/static-primitives` envelope a server puts
+// in its Server Card, delivered in the DOCUMENT instead: one <script> of JSON
+// declaring the page's own tools, prompts and resources. SEP-2575 already says
+// the Server Card and server/discover are two deliveries of one content; a page
+// is a third, with no transport at all.
+//
+// Parsing only. What a declaration MEANS is resolved elsewhere: tool handlers
+// live in window.aiActions keyed by `name`, and reads will be keyed by the
+// protocol's own identifier — `name` for prompts, `uri` for resources, because
+// that is what prompts/get and resources/read take.
+//
+// Malformed input must never take the page down: a card is host-authored and a
+// typo in it should cost that one entry, not the assistant. Everything
+// unparseable returns empty arrays and says so on the console, which is how
+// aiState already treats a reader missing its description.
+export function readStaticPrimitivesCard(text, warn = console.warn) {
+  const empty = { tools: [], prompts: [], resources: [] }
+  if (typeof text !== "string" || text.trim() === "") return empty
+
+  let doc
+  try {
+    doc = JSON.parse(text)
+  } catch (e) {
+    warn("[llm-meta-widget] page card is not valid JSON; ignoring it:", e.message)
+    return empty
+  }
+
+  const ext = (doc && doc._meta && doc._meta[STATIC_PRIMITIVES_META]) || null
+  if (!ext) {
+    warn(`[llm-meta-widget] page card has no _meta["${STATIC_PRIMITIVES_META}"]; ignoring it`)
+    return empty
+  }
+
+  const named = (arr, kind) => (Array.isArray(arr) ? arr : []).filter((e) => {
+    const ok = e && typeof e.name === "string" && e.name.trim() !== ""
+    if (!ok) warn(`[llm-meta-widget] page card: dropping a ${kind} with no name`)
+    return ok
+  })
+
+  return {
+    tools: named(ext.tools, "tool"),
+    prompts: named(ext.prompts, "prompt"),
+    // Resources are addressed by uri, not name — resources/read takes the uri.
+    resources: (Array.isArray(ext.resources) ? ext.resources : []).filter((e) => {
+      const ok = e && typeof e.uri === "string" && e.uri.trim() !== ""
+      if (!ok) warn("[llm-meta-widget] page card: dropping a resource with no uri")
+      return ok
+    })
+  }
+}
+
 const VOLATILITIES = [ "stable", "volatile" ]
 
 const usableSize = (n) => (typeof n === "number" && isFinite(n) ? n : null)

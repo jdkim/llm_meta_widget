@@ -331,3 +331,120 @@ test("the host's configured model is kept even if it cannot call tools", async (
 
   assert.ok(offered.includes("notools"), `the configured model must never vanish: ${offered}`)
 })
+
+// ---- page card, stage 1 -------------------------------------------------
+//
+// Stage 1 is the card's TOOLS reaching the model. Prompts and resources are
+// parsed but not yet wired — they need read/get resolution against the page.
+function putCard(ext) {
+  const el = document.createElement("script")
+  el.type = "application/json"
+  el.id = "ai-page"
+  el.textContent = JSON.stringify({ _meta: { "io.modelcontextprotocol/static-primitives": ext } })
+  document.body.appendChild(el)
+  return el
+}
+
+function putActionsTag(tools) {
+  const el = document.createElement("script")
+  el.type = "application/json"
+  el.id = "ai-actions"
+  el.textContent = JSON.stringify(tools)
+  document.body.appendChild(el)
+  return el
+}
+
+// mount() clears document.body, so the tag has to go in after the element
+// exists; these drive the declaration path by re-mounting with it present.
+async function mountWithPage({ card, actions }) {
+  document.body.innerHTML = ""
+  if (actions) putActionsTag(actions)
+  if (card) putCard(card)
+  const el = document.createElement("llm-meta-widget")
+  for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "" })) {
+    el.setAttribute(k, v)
+  }
+  document.body.appendChild(el)
+  await tick(60)
+  return el
+}
+
+test("a page with no card behaves exactly as before", async () => {
+  await mountWithPage({ actions: [ { name: "legacy_action", description: "d", input_schema: {} } ] })
+
+  assert.ok(document.getElementById("llm-meta-widget-chat"), "the panel should still mount")
+  assert.equal(document.getElementById("ai-page"), null, "no card was added")
+})
+
+// Send one turn and return the tool names the model was actually offered.
+async function localToolsAfterATurn() {
+  const panel = document.getElementById("llm-meta-widget-chat")
+  const input = panel.querySelector(".lmw-input")
+  input.value = "hello"
+  input.dispatchEvent(new window.Event("input", { bubbles: true }))
+  panel.querySelector(".lmw-form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(120)
+  return (sentBodies.at(-1)?.local_tools || []).map((t) => t.name)
+}
+
+test("the card's tools are the ones sent to the model", async () => {
+  await mountWithPage({
+    card: { tools: [ { name: "from_card", description: "d", inputSchema: {} } ] },
+    actions: [ { name: "from_tag", description: "d", input_schema: {} } ]
+  })
+
+  // The card REPLACES the tag rather than merging: two sources for one list
+  // would leave a reader working out which the page meant.
+  assert.deepEqual(await localToolsAfterATurn(), [ "from_card" ])
+})
+
+test("without a card the #ai-actions tag is still what is sent", async () => {
+  await mountWithPage({ actions: [ { name: "from_tag", description: "d", input_schema: {} } ] })
+
+  assert.deepEqual(await localToolsAfterATurn(), [ "from_tag" ])
+})
+
+test("a card declaring no tools falls back to the tag", async () => {
+  // An empty or prompts-only card must not silently disarm a page that still
+  // declares its actions the old way.
+  await mountWithPage({
+    card: { prompts: [ { name: "annotate" } ] },
+    actions: [ { name: "from_tag", description: "d", input_schema: {} } ]
+  })
+
+  assert.deepEqual(await localToolsAfterATurn(), [ "from_tag" ])
+})
+
+test("page-card-id points the widget at a differently named card", async () => {
+  // Hosts with an id clash need to move it, exactly as actions-schema-id allows.
+  document.body.innerHTML = ""
+  const el2 = document.createElement("script")
+  el2.type = "application/json"
+  el2.id = "my-card"
+  el2.textContent = JSON.stringify({ _meta: { "io.modelcontextprotocol/static-primitives": {
+    tools: [ { name: "from_renamed_card", description: "d", inputSchema: {} } ] } } })
+  document.body.appendChild(el2)
+  const el = document.createElement("llm-meta-widget")
+  for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "", "page-card-id": "my-card" })) {
+    el.setAttribute(k, v)
+  }
+  document.body.appendChild(el)
+  await tick(60)
+
+  assert.deepEqual(await localToolsAfterATurn(), [ "from_renamed_card" ])
+})
+
+test("a malformed card does not stop the panel mounting", async () => {
+  document.body.innerHTML = ""
+  const bad = document.createElement("script")
+  bad.type = "application/json"
+  bad.id = "ai-page"
+  bad.textContent = "{not json"
+  document.body.appendChild(bad)
+  const el = document.createElement("llm-meta-widget")
+  el.setAttribute("llm-url", HUB); el.setAttribute("model", "m1"); el.setAttribute("well-known-urls", "")
+  document.body.appendChild(el)
+  await tick(60)
+
+  assert.ok(document.getElementById("llm-meta-widget-chat"), "a host typo must not cost the assistant")
+})

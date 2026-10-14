@@ -80,6 +80,16 @@ end
 
 # The booleans are where a mismatch hides: the gem omits the attribute to mean
 # true, and the element must agree that absence means true.
+# The page card. A default that the partial never renders is inert: the key
+# sits in DEFAULTS, a host passes it, and nothing reaches the element. This
+# composition check is the only place that would notice.
+check("page_card_id: the default survives the trip") do
+  roundtrip["PAGE_CARD_ID"] == "ai-page"
+end
+check("page_card_id: a host override reaches the element") do
+  roundtrip(page_card_id: "my-card")["PAGE_CARD_ID"] == "my-card"
+end
+
 check("enable_model_picker: true -> omitted -> read back as true") do
   roundtrip(enable_model_picker: true)["ENABLE_MODEL_PICKER"] == true
 end

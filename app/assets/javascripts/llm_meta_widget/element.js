@@ -22,7 +22,8 @@ import { runChatLoop, fetchMcpManifest, listMcpPrompts, getMcpPrompt,
          listMcpResources, readMcpResource, promptMessagesToText,
          loadHostResource, resourceLinesForTurn, resolvePromptArguments,
          promptButtonProps, promptArgumentSummary, fetchOllamaModels,
-         createConversationStore, conversationKeyFor } from "./orchestrator.js";
+         createConversationStore, conversationKeyFor,
+         readStaticPrimitivesCard } from "./orchestrator.js";
 import { marked } from "./marked.esm.js";
 import { readConfig } from "./config.js";
 import conversationCss from "../../stylesheets/llm_meta_widget/conversation.css";
@@ -132,6 +133,7 @@ function boot(cfg) {
   var API_KEY_UUID           = cfg.API_KEY_UUID;
   var MODEL                  = cfg.MODEL;
   var ACTIONS_SCHEMA_ID      = cfg.ACTIONS_SCHEMA_ID;
+  var PAGE_CARD_ID           = cfg.PAGE_CARD_ID;
   var GREETING               = cfg.GREETING;
   var STATE_GLOBAL           = cfg.STATE_GLOBAL;
   var ACTIONS_GLOBAL         = cfg.ACTIONS_GLOBAL;
@@ -295,8 +297,17 @@ function boot(cfg) {
   			model: MODEL
   		});
   	}
+  	// The page card is the same static-primitives envelope a server puts in
+  	// its Server Card, delivered in the document. Its `tools` REPLACE the
+  	// older #ai-actions schema tag rather than merging with it: two sources
+  	// for one list means a reader has to work out which the page meant, and a
+  	// handler in window.aiActions answers to a name either way.
+  	var pageCardEl = document.getElementById(PAGE_CARD_ID);
+  	var pageCard = readStaticPrimitivesCard(pageCardEl ? pageCardEl.textContent : null);
   	var actionsSchemaEl = document.getElementById(ACTIONS_SCHEMA_ID);
-  	var localTools = actionsSchemaEl ? JSON.parse(actionsSchemaEl.textContent) : [];
+  	var localTools = pageCard.tools.length
+  		? pageCard.tools
+  		: (actionsSchemaEl ? JSON.parse(actionsSchemaEl.textContent) : []);
   	var remoteToolsEl = document.getElementById(REMOTE_TOOLS_SCHEMA_ID);
   	// remoteTools is a mutable live list: starts from the schema-provided
   	// baseline (if any), then the level-1 picker adds/removes entries as
