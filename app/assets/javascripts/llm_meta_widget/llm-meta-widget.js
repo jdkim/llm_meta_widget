@@ -737,7 +737,20 @@ async function resourceLinesForTurn({ plan, cached, endpoint, read, budgetBytes 
   }
   return { lines: resourceContextLines(cached), cached };
 }
+var PAGE_URI_PREFIX = "page:";
 var PROMPT_ARG_ALIASES = { dictionaries: "selected_dictionaries" };
+function promptArgState({ entries = [], resources = {}, state = {} } = {}) {
+  const merged = Object.assign({}, state);
+  for (const entry of entries) {
+    const uri = entry && entry.uri;
+    if (!uri || uri.indexOf(PAGE_URI_PREFIX) !== 0) continue;
+    const name = uri.slice(PAGE_URI_PREFIX.length);
+    const reader = resources[uri];
+    if (!name || merged[name] || typeof reader !== "function") continue;
+    merged[name] = { description: entry.description || "", read: reader };
+  }
+  return merged;
+}
 function promptArgFromState(argName, state) {
   const entry = state && state[argName] || state && state[PROMPT_ARG_ALIASES[argName]];
   const reader = entry && typeof entry.read === "function" ? entry.read : null;
@@ -4162,6 +4175,13 @@ function boot(cfg) {
     renderPromptButtons();
     renderWelcome();
   })();
+  function argState() {
+    return promptArgState({
+      entries: pageCard.resources,
+      resources: window[RESOURCES_GLOBAL] || {},
+      state: window[STATE_GLOBAL] || {}
+    });
+  }
   function renderPromptButtons() {
     if (!promptsEl) return;
     promptsEl.textContent = "";
@@ -4213,7 +4233,7 @@ function boot(cfg) {
     hello.className = "lmw-welcome-hello";
     hello.textContent = GREETING || "Hi \u2014 I can work this page for you. Tell me what you need in your own words" + (hostWidePrompts.length ? ", or start with one of these:" : ".");
     box.appendChild(hello);
-    var state = window[STATE_GLOBAL] || {};
+    var state = argState();
     hostWidePrompts.forEach(function(prompt) {
       var props = promptButtonProps(prompt);
       var card = document.createElement("div");
@@ -4249,7 +4269,7 @@ function boot(cfg) {
     historyEl.appendChild(box);
   }
   async function runPromptTemplate(prompt, button) {
-    var resolved = resolvePromptArguments(prompt, window[STATE_GLOBAL] || {});
+    var resolved = resolvePromptArguments(prompt, argState());
     var args = resolved.args;
     var missing = resolved.missing;
     if (missing.length) {

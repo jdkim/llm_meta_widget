@@ -24,7 +24,8 @@ import { runChatLoop, fetchMcpManifest, listMcpPrompts, getMcpPrompt,
          promptButtonProps, promptArgumentSummary, fetchOllamaModels,
          createConversationStore, conversationKeyFor,
          readStaticPrimitivesCard, getPagePrompt,
-         planPageResources, pageResourceLinesForTurn } from "./orchestrator.js";
+         planPageResources, pageResourceLinesForTurn,
+         promptArgState } from "./orchestrator.js";
 import { marked } from "./marked.esm.js";
 import { readConfig } from "./config.js";
 import conversationCss from "../../stylesheets/llm_meta_widget/conversation.css";
@@ -685,6 +686,15 @@ function boot(cfg) {
   	// submits — so it travels the exact path a typed message does.
 
 
+  	// Where a prompt's declared arguments are filled from. A card-only page keeps
+  	// its state in aiResources under `page:<name>` URIs, so the names the resolver
+  	// looks up live there, not in aiState.
+  	function argState() {
+  		return promptArgState({ entries: pageCard.resources,
+  		                        resources: window[RESOURCES_GLOBAL] || {},
+  		                        state: window[STATE_GLOBAL] || {} });
+  	}
+
   	function renderPromptButtons() {
   		if (!promptsEl) return;
   		promptsEl.textContent = "";
@@ -749,7 +759,7 @@ function boot(cfg) {
   			(hostWidePrompts.length ? ", or start with one of these:" : ".");
   		box.appendChild(hello);
 
-  		var state = window[STATE_GLOBAL] || {};
+  		var state = argState();
   		hostWidePrompts.forEach(function(prompt) {
   			var props = promptButtonProps(prompt);
   			var card  = document.createElement("div");
@@ -792,7 +802,7 @@ function boot(cfg) {
   	}
 
   	async function runPromptTemplate(prompt, button) {
-  		var resolved = resolvePromptArguments(prompt, window[STATE_GLOBAL] || {});
+  		var resolved = resolvePromptArguments(prompt, argState());
   		var args = resolved.args;
   		var missing = resolved.missing;
 

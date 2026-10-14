@@ -15,7 +15,7 @@ import { resourceHints, planResourceAttachment, trimResourceText,
          loadHostResource, resourceLinesForTurn,
          parseNdjsonStream, ollamaChatCall, fetchOllamaModels,
          packConversation, unpackConversation, createConversationStore, conversationKeyFor,
-         promptArgFromState, resolvePromptArguments, promptButtonProps,
+         promptArgFromState, promptArgState, resolvePromptArguments, promptButtonProps,
          promptArgumentSummary,
          STATIC_PRIMITIVES_META,
          parseSseStream, dispatchLocalToolCalls, runChatLoop, callMcpTool, fetchMcpManifest,
@@ -1982,4 +1982,78 @@ test("an async reader is awaited", async () => {
   const out = await pageResourceLinesForTurn({ plans, resources: { "page:text": async () => "later" }, budgetBytes: 8000 })
 
   assert.match(out.lines[0], /later/)
+})
+
+// --- prompt arguments on a card-only page ----------------------------------
+//
+// Arguments are declared by plain name; page resources are addressed by URI. A
+// page that moved its state into resources therefore had every prompt argument
+// arrive empty, and the visitor was asked to retype what was already on screen.
+
+const ARG_ENTRIES = [
+  { uri: "page:text", description: "the text to annotate" },
+  { uri: "page:selected_dictionaries", description: "chosen dictionaries" }
+]
+const ARG_RESOURCES = {
+  "page:text": () => "aspirin inhibits COX",
+  "page:selected_dictionaries": () => [ "MeSH", "DrugBank" ]
+}
+
+test("promptArgState fills an argument from the page resource of that name", () => {
+  const state = promptArgState({ entries: ARG_ENTRIES, resources: ARG_RESOURCES })
+
+  assert.equal(promptArgFromState("text", state), "aspirin inhibits COX")
+})
+
+test("promptArgState resolves an aliased argument through the resource", () => {
+  const state = promptArgState({ entries: ARG_ENTRIES, resources: ARG_RESOURCES })
+
+  assert.equal(promptArgFromState("dictionaries", state), "MeSH,DrugBank")
+})
+
+test("a declared resource with no reader supplies no argument", () => {
+  const state = promptArgState({ entries: ARG_ENTRIES, resources: {} })
+
+  assert.equal(promptArgFromState("text", state), "")
+})
+
+test("an explicit aiState entry wins over the page resource of the same name", () => {
+  const state = promptArgState({
+    entries: ARG_ENTRIES,
+    resources: ARG_RESOURCES,
+    state: { text: { description: "declared directly", read: () => "from aiState" } }
+  })
+
+  assert.equal(promptArgFromState("text", state), "from aiState")
+})
+
+test("a resource addressed by another scheme does not become an argument", () => {
+  // `data:` is the same length as `page:`, so slicing the prefix off it yields
+  // exactly the argument name. Only the scheme check can tell these apart — a
+  // longer scheme such as https:// would be mangled by the slice and the test
+  // would pass with the check removed, proving nothing.
+  const state = promptArgState({
+    entries: [ { uri: "data:text", description: "elsewhere" } ],
+    resources: { "data:text": () => "remote" }
+  })
+
+  assert.equal(promptArgFromState("text", state), "")
+})
+
+test("a required argument a page resource fills is not reported missing", () => {
+  const state = promptArgState({ entries: ARG_ENTRIES, resources: ARG_RESOURCES })
+  const resolved = resolvePromptArguments({ arguments: [ { name: "text", required: true } ] }, state)
+
+  assert.deepEqual(resolved.missing, [])
+  assert.equal(resolved.args.text, "aspirin inhibits COX")
+})
+
+test("the argument summary shows a resource-filled slot as filled", () => {
+  const state = promptArgState({ entries: ARG_ENTRIES, resources: ARG_RESOURCES })
+
+  assert.equal(promptArgumentSummary({ arguments: [ { name: "text" } ] }, state)[0].filled, true)
+})
+
+test("promptArgState called with nothing is harmless", () => {
+  assert.equal(promptArgFromState("text", promptArgState()), "")
 })

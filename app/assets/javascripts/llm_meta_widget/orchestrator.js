@@ -1129,7 +1129,34 @@ export async function resourceLinesForTurn({ plan, cached, endpoint, read, budge
 // (window.aiState) by name. `dictionaries` is read from a
 // `selected_dictionaries` reader: the page selects a LIST, and the prompt
 // declares the CSV shape the text_annotation tool already takes.
+// Page resources are addressed `page:<name>`: a custom scheme because the
+// protocol asks for a URI and `https:` is reserved for what a client can fetch
+// itself, and with no path because a page has one namespace.
+const PAGE_URI_PREFIX = "page:"
+
 const PROMPT_ARG_ALIASES = { dictionaries: "selected_dictionaries" }
+
+// Prompt arguments are declared by plain name (`text`); page resources are
+// addressed by URI (`page:text`). So on a page that declares its state as
+// resources and keeps no `aiState`, the resolver below finds nothing under the
+// names it looks up and every argument arrives empty — the visitor is asked to
+// retype what is already on screen. This presents those resources in the shape
+// the resolver consumes, keyed by the name inside the URI.
+//
+// An explicit `aiState` entry wins: a page running both channels has said what
+// it wants under that name.
+export function promptArgState({ entries = [], resources = {}, state = {} } = {}) {
+  const merged = Object.assign({}, state)
+  for (const entry of entries) {
+    const uri = entry && entry.uri
+    if (!uri || uri.indexOf(PAGE_URI_PREFIX) !== 0) continue
+    const name = uri.slice(PAGE_URI_PREFIX.length)
+    const reader = resources[uri]
+    if (!name || merged[name] || typeof reader !== "function") continue
+    merged[name] = { description: entry.description || "", read: reader }
+  }
+  return merged
+}
 
 export function promptArgFromState(argName, state) {
   // Same object shape the system-prompt annex consumes: { description, read }.
