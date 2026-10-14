@@ -23,7 +23,8 @@ import { runChatLoop, fetchMcpManifest, listMcpPrompts, getMcpPrompt,
          loadHostResource, resourceLinesForTurn, resolvePromptArguments,
          promptButtonProps, promptArgumentSummary, fetchOllamaModels,
          createConversationStore, conversationKeyFor,
-         readStaticPrimitivesCard } from "./orchestrator.js";
+         readStaticPrimitivesCard, getPagePrompt,
+         planPageResources, pageResourceLinesForTurn } from "./orchestrator.js";
 import { marked } from "./marked.esm.js";
 import { readConfig } from "./config.js";
 import conversationCss from "../../stylesheets/llm_meta_widget/conversation.css";
@@ -137,6 +138,8 @@ function boot(cfg) {
   var GREETING               = cfg.GREETING;
   var STATE_GLOBAL           = cfg.STATE_GLOBAL;
   var ACTIONS_GLOBAL         = cfg.ACTIONS_GLOBAL;
+  var PROMPTS_GLOBAL         = cfg.PROMPTS_GLOBAL;
+  var RESOURCES_GLOBAL       = cfg.RESOURCES_GLOBAL;
   var REMOTE_TOOLS_SCHEMA_ID = cfg.REMOTE_TOOLS_SCHEMA_ID;
   var MAX_ROUNDS             = cfg.MAX_ROUNDS;
   var WELL_KNOWN_URLS        = cfg.WELL_KNOWN_URLS;
@@ -587,7 +590,12 @@ function boot(cfg) {
   	// Fetch well-known MCP manifests at boot. Auto-discovers same origin
   	// if WELL_KNOWN_URLS is null; empty array disables entirely.
   	var hostWideTools = [];
-  	var hostWidePrompts = [];
+  	// The page's own prompts sit in the same list as the hub's: to a visitor
+  	// they are the same affordance. `source` is what routes prompts/get —
+  	// a page prompt has no endpoint to ask.
+  	var hostWidePrompts = pageCard.prompts.map(function(p) {
+  		return Object.assign({}, p, { source: "page" });
+  	});
   	var resourceContext = null;   // payload of the host's reference resource
   	var resourcePlan = null;      // the pre-flight decision, kept so Clear can re-arm the gate
 
@@ -596,11 +604,30 @@ function boot(cfg) {
   	// is 218 dictionaries / ~35KB / ~10k tokens.
   	var RESOURCE_BUDGET_BYTES = 8000;
 
+  	// The page's own resources, planned once from the card. Unlike the hub's
+  	// single reference resource these are a list: a page declares one per
+  	// thing it knows, each with its own description.
+  	var pageResourcePlans = planPageResources({
+  		entries:     pageCard.resources,
+  		budgetBytes: RESOURCE_BUDGET_BYTES,
+  		onSkip: function(plan) {
+  			console.info("[llm_meta_widget] not attaching " + plan.uri +
+  			             " (" + plan.reason + ", size=" + plan.size + ")");
+  		}
+  	});
+  	var pageResourceCache = {};
+
 
   	// Before anything asynchronous: if this page was navigated away from and
   	// back, the visitor should see their conversation immediately.
   	restoreConversation();
 
+  	// Looked up BEFORE the discovery IIFE, not after it. That block calls
+  	// renderPromptButtons(), and with no well-known URLs to fetch it has no
+  	// await at all — so it ran while this was still undefined and the render
+  	// bailed at its own guard. A page that declares its own prompts is
+  	// exactly the case with nothing to await.
+  	var promptsEl = root.querySelector(".lmw-prompts");
   	var wellKnownReady = (async function() {
   		var urls = WELL_KNOWN_URLS === null
   			? [ window.location.origin + "/.well-known/mcp.json" ]
@@ -657,7 +684,6 @@ function boot(cfg) {
   	// the message (prompts/get), then drops the text into the textarea and
   	// submits — so it travels the exact path a typed message does.
 
-  	var promptsEl = root.querySelector(".lmw-prompts");
 
   	function renderPromptButtons() {
   		if (!promptsEl) return;
@@ -780,7 +806,9 @@ function boot(cfg) {
 
   		button.disabled = true;
   		try {
-  			var result = await getMcpPrompt({ endpoint: prompt.endpoint, name: prompt.name, args: args });
+  			var result = prompt.source === "page"
+  				? await getPagePrompt({ name: prompt.name, args: args, prompts: window[PROMPTS_GLOBAL] })
+  				: await getMcpPrompt({ endpoint: prompt.endpoint, name: prompt.name, args: args });
   			var text = promptMessagesToText(result);
   			if (!text) { appendTurn("error", "The server returned an empty prompt."); return; }
   			inputEl.value = text;
@@ -1065,7 +1093,18 @@ function boot(cfg) {
   			budgetBytes: RESOURCE_BUDGET_BYTES
   		});
   		resourceContext = turn.cached;
-  		return turn.lines;
+
+  		// The page's own resources ride in the same per-turn slot as the hub's.
+  		// Volatile ones are re-read here, which is the whole point: a form field
+  		// read at boot is already stale by the time anyone sends a message.
+  		var page = await pageResourceLinesForTurn({
+  			plans:       pageResourcePlans,
+  			resources:   window[RESOURCES_GLOBAL],
+  			budgetBytes: RESOURCE_BUDGET_BYTES,
+  			cache:       pageResourceCache
+  		});
+  		pageResourceCache = page.cache;
+  		return turn.lines.concat(page.lines);
   	}
 
   	// Per-turn AbortController — lets the Clear button (or a new submit)

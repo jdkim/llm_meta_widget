@@ -730,6 +730,28 @@ export async function readMcpResource({ endpoint, uri, signal }) {
 // The spec allows `content` to be an object or an array of content blocks;
 // anything non-text is dropped, which is worth knowing — a prompt carrying an
 // image would silently lose it on this path.
+// A prompt the PAGE declared, resolved against its handler map. This is
+// prompts/get for a surface with no transport: the card carries the metadata
+// (name, description, arguments — what prompts/list returns) and the handler
+// returns the filled messages, exactly as a server's prompts/get would.
+//
+// Keyed by `name` because that is what prompts/get takes. Accepts a plain
+// string as well as a messages array: a page prompt is usually one block of
+// text, and making every host write the envelope by hand would be a tax with
+// no benefit — promptMessagesToText flattens both to the same thing.
+export async function getPagePrompt({ name, args, prompts }) {
+  const handler = prompts && prompts[name]
+  if (typeof handler !== "function") {
+    throw new Error('the page declares prompt "' + name + '" but no handler answers to that name')
+  }
+
+  const result = await handler(args || {})
+  if (typeof result === "string") {
+    return { messages: [ { role: "user", content: { type: "text", text: result } } ] }
+  }
+  return result || { messages: [] }
+}
+
 export function promptMessagesToText(result) {
   return (result?.messages || [])
     .map((m) => {
@@ -896,6 +918,7 @@ export function readStaticPrimitivesCard(text, warn = console.warn) {
 const VOLATILITIES = [ "stable", "volatile" ]
 
 const usableSize = (n) => (typeof n === "number" && isFinite(n) ? n : null)
+const pickDeclared = (own, fromMeta) => (own === undefined ? fromMeta : own)
 
 export function resourceHints(entry) {
   const meta = (entry && entry._meta && entry._meta[STATIC_PRIMITIVES_META]) || {}
@@ -910,8 +933,17 @@ export function resourceHints(entry) {
     // it returns is public API. Dropped at 0.9.0 together with the
     // `_meta.sizeBytes` fallback above — one deprecation, one bump.
     get sizeBytes() { return this.size },
-    volatility: VOLATILITIES.indexOf(meta.volatility) === -1 ? "stable" : meta.volatility,
-    autoAttach: typeof meta.autoAttach === "boolean" ? meta.autoAttach : true
+    // Same rule as `size`: the entry's own field wins, `_meta` is the fallback.
+    // SEP-0000 defines these ON the Resource object; a server puts them in
+    // `_meta` only because the extension is not merged yet. A PAGE card's
+    // entries already sit inside the extension block, so for them the fields
+    // are simply top-level — reading both is what lets one planner serve both.
+    volatility: VOLATILITIES.indexOf(pickDeclared(entry && entry.volatility, meta.volatility)) === -1
+      ? "stable"
+      : pickDeclared(entry && entry.volatility, meta.volatility),
+    autoAttach: typeof pickDeclared(entry && entry.autoAttach, meta.autoAttach) === "boolean"
+      ? pickDeclared(entry && entry.autoAttach, meta.autoAttach)
+      : true
   }
 }
 
@@ -969,6 +1001,65 @@ async function readResourceContext({ endpoint, uri, name, read, budgetBytes }) {
     return { uri, name: name || uri, text: trimResourceText(entry.text, budgetBytes) }
   } catch (e) {
     // Optional context — a failed read must never block the widget.
+    return null
+  }
+}
+
+// ---- page resources ----------------------------------------------------
+//
+// resources/read for a surface with no transport. The card lists them, a
+// handler map keyed by URI reads them — URI because that is what
+// resources/read takes, and because the spec defines it as the unique
+// identifier while `name` is only required, never unique.
+//
+// Unlike a server endpoint, a page declares SEVERAL: PubDictionaries has six
+// readers, each with its own description. So these are planned and rendered as
+// a list, not as the single reference resource loadHostResource assumes.
+export function planPageResources({ entries, budgetBytes, onSkip }) {
+  return (entries || []).map((entry) => {
+    const plan = planResourceAttachment(entry, budgetBytes)
+    plan.name = entry.name || entry.uri
+    plan.description = entry.description || ""
+    if (!plan.fetch && onSkip) onSkip(plan)
+    return plan
+  }).filter((plan) => plan.fetch)
+}
+
+// One compact line per resource — the same shape the page-state annex uses,
+// NOT the block form a hub resource gets. Six block-form resources would cost
+// three lines each and repeat a header the model does not need; how to render
+// attached context is the client's decision, which the spec leaves open.
+export function pageResourceLine(plan, text) {
+  return "- " + plan.name + (plan.description ? " (" + plan.description + ")" : "") + ": " + text
+}
+
+export async function pageResourceLinesForTurn({ plans, resources, budgetBytes, cache = {} }) {
+  const lines = []
+  for (const plan of plans || []) {
+    let text = plan.volatility === "volatile" ? null : cache[plan.uri]
+    if (text === null || text === undefined) {
+      text = await readPageResource({ uri: plan.uri, resources, budgetBytes })
+      if (plan.volatility !== "volatile" && text !== null) cache[plan.uri] = text
+    }
+    if (text !== null) lines.push(pageResourceLine(plan, text))
+  }
+  return { lines, cache }
+}
+
+async function readPageResource({ uri, resources, budgetBytes }) {
+  const handler = resources && resources[uri]
+  if (typeof handler !== "function") {
+    console.warn('[llm-meta-widget] the page declares resource "' + uri + '" but no handler answers to that uri')
+    return null
+  }
+  try {
+    const value = await handler()
+    const text = typeof value === "string" ? value : JSON.stringify(value)
+    return trimResourceText(text === undefined ? "" : text, budgetBytes)
+  } catch (e) {
+    // Optional context — one broken reader must not cost the turn, exactly as
+    // a failed hub read does not.
+    console.warn('[llm-meta-widget] reading "' + uri + '" failed:', e && e.message)
     return null
   }
 }

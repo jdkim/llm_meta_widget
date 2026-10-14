@@ -83,6 +83,14 @@ end
 # The page card. A default that the partial never renders is inert: the key
 # sits in DEFAULTS, a host passes it, and nothing reaches the element. This
 # composition check is the only place that would notice.
+check("resources_global: a host override reaches the element") do
+  roundtrip(resources_global: "myResources")["RESOURCES_GLOBAL"] == "myResources"
+end
+
+check("prompts_global: a host override reaches the element") do
+  roundtrip(prompts_global: "myPrompts")["PROMPTS_GLOBAL"] == "myPrompts"
+end
+
 check("page_card_id: the default survives the trip") do
   roundtrip["PAGE_CARD_ID"] == "ai-page"
 end

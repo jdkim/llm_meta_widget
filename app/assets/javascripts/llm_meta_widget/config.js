@@ -29,6 +29,8 @@ export const DEFAULTS = Object.freeze({
   PAGE_CARD_ID:           "ai-page",
   STATE_GLOBAL:           "aiState",
   ACTIONS_GLOBAL:         "aiActions",
+  PROMPTS_GLOBAL:         "aiPrompts",
+  RESOURCES_GLOBAL:       "aiResources",
   REMOTE_TOOLS_SCHEMA_ID: "remote-mcp-tools",
   LLM_PROVIDER:           "llm_meta_server",
   MAX_ROUNDS:             3,
@@ -64,6 +66,8 @@ export function readConfig(el) {
     GREETING:               str("greeting", null),
     STATE_GLOBAL:           str("state-global", DEFAULTS.STATE_GLOBAL),
     ACTIONS_GLOBAL:         str("actions-global", DEFAULTS.ACTIONS_GLOBAL),
+    PROMPTS_GLOBAL:         str("prompts-global", DEFAULTS.PROMPTS_GLOBAL),
+    RESOURCES_GLOBAL:       str("resources-global", DEFAULTS.RESOURCES_GLOBAL),
     REMOTE_TOOLS_SCHEMA_ID: str("remote-tools-schema-id", DEFAULTS.REMOTE_TOOLS_SCHEMA_ID),
     MAX_ROUNDS:             int("max-rounds", DEFAULTS.MAX_ROUNDS),
     WELL_KNOWN_URLS:        wellKnown === null

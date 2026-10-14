@@ -45,6 +45,12 @@ module LlmMetaWidget
       page_card_id:            "ai-page",
       state_global:            "aiState",
       actions_global:          "aiActions",
+      # Page-declared prompts resolve their messages here, keyed by name —
+      # prompts/get for a surface with no transport.
+      prompts_global:          "aiPrompts",
+      # Page-declared resources are read here, keyed by URI — resources/read
+      # for the same surface. URI, because that is what resources/read takes.
+      resources_global:        "aiResources",
       remote_tools_schema_id:  "remote-mcp-tools",
       # nil → widget auto-discovers same-origin /.well-known/mcp.json at boot;
       # explicit array → fetch those URLs; empty array → disable entirely.

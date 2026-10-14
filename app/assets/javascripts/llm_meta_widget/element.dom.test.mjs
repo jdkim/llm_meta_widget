@@ -448,3 +448,126 @@ test("a malformed card does not stop the panel mounting", async () => {
 
   assert.ok(document.getElementById("llm-meta-widget-chat"), "a host typo must not cost the assistant")
 })
+
+// ---- page prompts, end to end -------------------------------------------
+
+test("a card-declared prompt appears as a button and sends its handler's text", async () => {
+  window.aiPrompts = { annotate: (args) => "Annotate: " + (args.subject || "nothing") }
+  await mountWithPage({ card: { prompts: [ { name: "annotate", description: "Annotate the page" } ] } })
+
+  const panel = document.getElementById("llm-meta-widget-chat")
+  const button = [ ...panel.querySelectorAll(".lmw-prompt") ].find((b) => /annotate/i.test(b.textContent))
+  assert.ok(button, "a page prompt should render as a button like a server's")
+
+  button.dispatchEvent(new window.Event("click", { bubbles: true }))
+  await tick(140)
+
+  const sent = sentBodies.at(-1)
+  const user = (sent?.messages || []).filter((m) => m.role === "user").at(-1)
+  assert.match(String(user?.content ?? ""), /Annotate: /)
+  delete window.aiPrompts
+})
+
+test("a page prompt with no handler reports it instead of sending an empty turn", async () => {
+  window.aiPrompts = {}
+  await mountWithPage({ card: { prompts: [ { name: "annotate", description: "Annotate" } ] } })
+
+  const panel = document.getElementById("llm-meta-widget-chat")
+  const before = sentBodies.length
+  const button = [ ...panel.querySelectorAll(".lmw-prompt") ].find((b) => /annotate/i.test(b.textContent))
+  button.dispatchEvent(new window.Event("click", { bubbles: true }))
+  await tick(140)
+
+  assert.equal(sentBodies.length, before, "nothing should be sent when the prompt cannot be built")
+  assert.match(panel.textContent, /annotate/)
+  delete window.aiPrompts
+})
+
+// ---- page resources, end to end -----------------------------------------
+
+test("a card-declared resource reaches the system prompt with its description", async () => {
+  window.aiResources = { "page:/annotation/text": () => "carpal tunnel syndrome" }
+  await mountWithPage({ card: { resources: [
+    { uri: "page:/annotation/text", name: "Text", description: "the text to annotate" }
+  ] } })
+
+  const panel = document.getElementById("llm-meta-widget-chat")
+  const system = await systemPromptAfterATurn(panel)
+
+  assert.match(system, /Text \(the text to annotate\): carpal tunnel syndrome/)
+  delete window.aiResources
+})
+
+test("a volatile page resource is re-read on the second turn", async () => {
+  let n = 0
+  window.aiResources = { "page:/annotation/text": () => "value " + (++n) }
+  await mountWithPage({ card: { resources: [
+    { uri: "page:/annotation/text", name: "Text", description: "d", volatility: "volatile" }
+  ] } })
+
+  const panel = document.getElementById("llm-meta-widget-chat")
+  const first = await systemPromptAfterATurn(panel)
+  const second = await systemPromptAfterATurn(panel)
+
+  assert.match(first, /value 1/)
+  assert.match(second, /value 2/, "a form field read at boot is stale by the next turn")
+  delete window.aiResources
+})
+
+test("a page with no resources sends the same prompt it always did", async () => {
+  await mountWithPage({ card: { tools: [ { name: "t", description: "d", inputSchema: {} } ] } })
+
+  const panel = document.getElementById("llm-meta-widget-chat")
+  const system = await systemPromptAfterATurn(panel)
+
+  assert.match(system, /Current page state/)
+  assert.doesNotMatch(system, /page:\//)
+})
+
+// The globals are renameable, and "readConfig parsed the attribute" is not the
+// same claim as "the panel read from the renamed object". Only driving a turn
+// distinguishes them.
+test("resources-global points the panel at a renamed map", async () => {
+  window.myResources = { "page:/t": () => "from the renamed map" }
+  document.body.innerHTML = ""
+  const card = document.createElement("script")
+  card.type = "application/json"; card.id = "ai-page"
+  card.textContent = JSON.stringify({ _meta: { "io.modelcontextprotocol/static-primitives": {
+    resources: [ { uri: "page:/t", name: "T", description: "d" } ] } } })
+  document.body.appendChild(card)
+  const el = document.createElement("llm-meta-widget")
+  for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "", "resources-global": "myResources" })) {
+    el.setAttribute(k, v)
+  }
+  document.body.appendChild(el)
+  await tick(60)
+
+  const system = await systemPromptAfterATurn(document.getElementById("llm-meta-widget-chat"))
+  assert.match(system, /from the renamed map/)
+  delete window.myResources
+})
+
+test("prompts-global points the panel at a renamed map", async () => {
+  window.myPrompts = { annotate: () => "from the renamed prompts" }
+  document.body.innerHTML = ""
+  const card = document.createElement("script")
+  card.type = "application/json"; card.id = "ai-page"
+  card.textContent = JSON.stringify({ _meta: { "io.modelcontextprotocol/static-primitives": {
+    prompts: [ { name: "annotate", description: "Annotate" } ] } } })
+  document.body.appendChild(card)
+  const el = document.createElement("llm-meta-widget")
+  for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "", "prompts-global": "myPrompts" })) {
+    el.setAttribute(k, v)
+  }
+  document.body.appendChild(el)
+  await tick(60)
+
+  const panel = document.getElementById("llm-meta-widget-chat")
+  const button = [ ...panel.querySelectorAll(".lmw-prompt") ].find((b) => /annotate/i.test(b.textContent))
+  button.dispatchEvent(new window.Event("click", { bubbles: true }))
+  await tick(140)
+
+  const user = (sentBodies.at(-1)?.messages || []).filter((m) => m.role === "user").at(-1)
+  assert.match(String(user?.content ?? ""), /from the renamed prompts/)
+  delete window.myPrompts
+})

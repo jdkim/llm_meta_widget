@@ -483,6 +483,17 @@ async function readMcpResource({ endpoint, uri, signal }) {
     label: `readMcpResource(${uri})`
   });
 }
+async function getPagePrompt({ name, args, prompts }) {
+  const handler = prompts && prompts[name];
+  if (typeof handler !== "function") {
+    throw new Error('the page declares prompt "' + name + '" but no handler answers to that name');
+  }
+  const result = await handler(args || {});
+  if (typeof result === "string") {
+    return { messages: [{ role: "user", content: { type: "text", text: result } }] };
+  }
+  return result || { messages: [] };
+}
 function promptMessagesToText(result) {
   return (result?.messages || []).map((m) => {
     const c = m.content;
@@ -582,6 +593,7 @@ function readStaticPrimitivesCard(text, warn = console.warn) {
 }
 var VOLATILITIES = ["stable", "volatile"];
 var usableSize = (n) => typeof n === "number" && isFinite(n) ? n : null;
+var pickDeclared = (own, fromMeta) => own === void 0 ? fromMeta : own;
 function resourceHints(entry) {
   const meta = entry && entry._meta && entry._meta[STATIC_PRIMITIVES_META] || {};
   return {
@@ -597,8 +609,13 @@ function resourceHints(entry) {
     get sizeBytes() {
       return this.size;
     },
-    volatility: VOLATILITIES.indexOf(meta.volatility) === -1 ? "stable" : meta.volatility,
-    autoAttach: typeof meta.autoAttach === "boolean" ? meta.autoAttach : true
+    // Same rule as `size`: the entry's own field wins, `_meta` is the fallback.
+    // SEP-0000 defines these ON the Resource object; a server puts them in
+    // `_meta` only because the extension is not merged yet. A PAGE card's
+    // entries already sit inside the extension block, so for them the fields
+    // are simply top-level — reading both is what lets one planner serve both.
+    volatility: VOLATILITIES.indexOf(pickDeclared(entry && entry.volatility, meta.volatility)) === -1 ? "stable" : pickDeclared(entry && entry.volatility, meta.volatility),
+    autoAttach: typeof pickDeclared(entry && entry.autoAttach, meta.autoAttach) === "boolean" ? pickDeclared(entry && entry.autoAttach, meta.autoAttach) : true
   };
 }
 function planResourceAttachment(entry, budgetBytes) {
@@ -639,6 +656,45 @@ async function readResourceContext({ endpoint, uri, name, read, budgetBytes }) {
     if (!entry || !entry.text) return null;
     return { uri, name: name || uri, text: trimResourceText(entry.text, budgetBytes) };
   } catch (e) {
+    return null;
+  }
+}
+function planPageResources({ entries, budgetBytes, onSkip }) {
+  return (entries || []).map((entry) => {
+    const plan = planResourceAttachment(entry, budgetBytes);
+    plan.name = entry.name || entry.uri;
+    plan.description = entry.description || "";
+    if (!plan.fetch && onSkip) onSkip(plan);
+    return plan;
+  }).filter((plan) => plan.fetch);
+}
+function pageResourceLine(plan, text) {
+  return "- " + plan.name + (plan.description ? " (" + plan.description + ")" : "") + ": " + text;
+}
+async function pageResourceLinesForTurn({ plans, resources, budgetBytes, cache = {} }) {
+  const lines = [];
+  for (const plan of plans || []) {
+    let text = plan.volatility === "volatile" ? null : cache[plan.uri];
+    if (text === null || text === void 0) {
+      text = await readPageResource({ uri: plan.uri, resources, budgetBytes });
+      if (plan.volatility !== "volatile" && text !== null) cache[plan.uri] = text;
+    }
+    if (text !== null) lines.push(pageResourceLine(plan, text));
+  }
+  return { lines, cache };
+}
+async function readPageResource({ uri, resources, budgetBytes }) {
+  const handler = resources && resources[uri];
+  if (typeof handler !== "function") {
+    console.warn('[llm-meta-widget] the page declares resource "' + uri + '" but no handler answers to that uri');
+    return null;
+  }
+  try {
+    const value = await handler();
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    return trimResourceText(text === void 0 ? "" : text, budgetBytes);
+  } catch (e) {
+    console.warn('[llm-meta-widget] reading "' + uri + '" failed:', e && e.message);
     return null;
   }
 }
@@ -2938,6 +2994,8 @@ var DEFAULTS = Object.freeze({
   PAGE_CARD_ID: "ai-page",
   STATE_GLOBAL: "aiState",
   ACTIONS_GLOBAL: "aiActions",
+  PROMPTS_GLOBAL: "aiPrompts",
+  RESOURCES_GLOBAL: "aiResources",
   REMOTE_TOOLS_SCHEMA_ID: "remote-mcp-tools",
   LLM_PROVIDER: "llm_meta_server",
   MAX_ROUNDS: 3
@@ -2975,6 +3033,8 @@ function readConfig(el) {
     GREETING: str("greeting", null),
     STATE_GLOBAL: str("state-global", DEFAULTS.STATE_GLOBAL),
     ACTIONS_GLOBAL: str("actions-global", DEFAULTS.ACTIONS_GLOBAL),
+    PROMPTS_GLOBAL: str("prompts-global", DEFAULTS.PROMPTS_GLOBAL),
+    RESOURCES_GLOBAL: str("resources-global", DEFAULTS.RESOURCES_GLOBAL),
     REMOTE_TOOLS_SCHEMA_ID: str("remote-tools-schema-id", DEFAULTS.REMOTE_TOOLS_SCHEMA_ID),
     MAX_ROUNDS: int("max-rounds", DEFAULTS.MAX_ROUNDS),
     WELL_KNOWN_URLS: wellKnown === null ? null : wellKnown.trim() === "" ? [] : splitList(wellKnown),
@@ -3695,6 +3755,8 @@ function boot(cfg) {
   var GREETING = cfg.GREETING;
   var STATE_GLOBAL = cfg.STATE_GLOBAL;
   var ACTIONS_GLOBAL = cfg.ACTIONS_GLOBAL;
+  var PROMPTS_GLOBAL = cfg.PROMPTS_GLOBAL;
+  var RESOURCES_GLOBAL = cfg.RESOURCES_GLOBAL;
   var REMOTE_TOOLS_SCHEMA_ID = cfg.REMOTE_TOOLS_SCHEMA_ID;
   var MAX_ROUNDS = cfg.MAX_ROUNDS;
   var WELL_KNOWN_URLS = cfg.WELL_KNOWN_URLS;
@@ -4051,11 +4113,22 @@ function boot(cfg) {
     }
   }
   var hostWideTools = [];
-  var hostWidePrompts = [];
+  var hostWidePrompts = pageCard.prompts.map(function(p) {
+    return Object.assign({}, p, { source: "page" });
+  });
   var resourceContext = null;
   var resourcePlan = null;
   var RESOURCE_BUDGET_BYTES = 8e3;
+  var pageResourcePlans = planPageResources({
+    entries: pageCard.resources,
+    budgetBytes: RESOURCE_BUDGET_BYTES,
+    onSkip: function(plan) {
+      console.info("[llm_meta_widget] not attaching " + plan.uri + " (" + plan.reason + ", size=" + plan.size + ")");
+    }
+  });
+  var pageResourceCache = {};
   restoreConversation();
+  var promptsEl = root.querySelector(".lmw-prompts");
   var wellKnownReady = (async function() {
     var urls = WELL_KNOWN_URLS === null ? [window.location.origin + "/.well-known/mcp.json"] : WELL_KNOWN_URLS;
     for (var i = 0; i < urls.length; i++) {
@@ -4089,7 +4162,6 @@ function boot(cfg) {
     renderPromptButtons();
     renderWelcome();
   })();
-  var promptsEl = root.querySelector(".lmw-prompts");
   function renderPromptButtons() {
     if (!promptsEl) return;
     promptsEl.textContent = "";
@@ -4186,7 +4258,7 @@ function boot(cfg) {
     }
     button.disabled = true;
     try {
-      var result = await getMcpPrompt({ endpoint: prompt.endpoint, name: prompt.name, args });
+      var result = prompt.source === "page" ? await getPagePrompt({ name: prompt.name, args, prompts: window[PROMPTS_GLOBAL] }) : await getMcpPrompt({ endpoint: prompt.endpoint, name: prompt.name, args });
       var text = promptMessagesToText(result);
       if (!text) {
         appendTurn("error", "The server returned an empty prompt.");
@@ -4400,7 +4472,14 @@ function boot(cfg) {
       budgetBytes: RESOURCE_BUDGET_BYTES
     });
     resourceContext = turn.cached;
-    return turn.lines;
+    var page = await pageResourceLinesForTurn({
+      plans: pageResourcePlans,
+      resources: window[RESOURCES_GLOBAL],
+      budgetBytes: RESOURCE_BUDGET_BYTES,
+      cache: pageResourceCache
+    });
+    pageResourceCache = page.cache;
+    return turn.lines.concat(page.lines);
   }
   var currentAbort = null;
   clearBtn.addEventListener("click", function() {

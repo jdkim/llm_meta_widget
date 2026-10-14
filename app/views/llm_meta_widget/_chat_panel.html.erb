@@ -31,6 +31,8 @@
   <%= tag_attr("page-card-id", page_card_id) %>
   <%= tag_attr("state-global", state_global) %>
   <%= tag_attr("actions-global", actions_global) %>
+  <%= tag_attr("prompts-global", prompts_global) %>
+  <%= tag_attr("resources-global", resources_global) %>
   <%= tag_attr("remote-tools-schema-id", remote_tools_schema_id) %>
   <%# Pickers default to true in the element, so only emit the disabling value. %>
   <%= enable_model_picker ? "" : 'enable-model-picker="false"'.html_safe %>
