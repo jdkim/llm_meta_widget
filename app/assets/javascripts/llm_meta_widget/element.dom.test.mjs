@@ -571,3 +571,56 @@ test("prompts-global points the panel at a renamed map", async () => {
   assert.match(String(user?.content ?? ""), /from the renamed prompts/)
   delete window.myPrompts
 })
+
+// A prompt's declared arguments are looked up by plain NAME, while page
+// resources are addressed by URI. On a page that keeps its state in resources
+// and has no aiState, every argument therefore arrived empty and the visitor
+// was asked to retype what was already on screen. The orchestrator knows how to
+// bridge the two; this proves the element actually asks it to, which is the
+// half that was missing when the bridge shipped.
+test("a page resource fills a card-declared prompt's argument", async () => {
+  window.aiResources = { "page:text": () => "aspirin inhibits COX" }
+  window.aiPrompts = { annotate: (args) => "ANNOTATE[" + (args.text || "empty") + "]" }
+  await mountWithPage({ card: {
+    prompts: [ { name: "annotate", description: "Annotate the page",
+                 arguments: [ { name: "text", required: false } ] } ],
+    resources: [ { uri: "page:text", name: "Text", description: "the text", volatility: "volatile" } ]
+  } })
+
+  const panel = document.getElementById("llm-meta-widget-chat")
+  const button = [ ...panel.querySelectorAll(".lmw-prompt") ].find((b) => /annotate/i.test(b.textContent))
+  button.dispatchEvent(new window.Event("click", { bubbles: true }))
+  await tick(140)
+
+  const sent = sentBodies.at(-1)
+  const user = (sent?.messages || []).filter((m) => m.role === "user").at(-1)
+  assert.match(String(user?.content ?? ""), /ANNOTATE\[aspirin inhibits COX\]/,
+               "the argument should be filled from the page resource of that name")
+  delete window.aiResources
+  delete window.aiPrompts
+})
+
+// aiState is the page saying explicitly what it wants under that name, so it
+// must win over a resource that happens to share it. Without this, the merge
+// order is free to flip and nothing notices.
+test("an explicit aiState reader wins over a page resource of the same name", async () => {
+  window.aiState = { text: { description: "declared directly", read: () => "from aiState" } }
+  window.aiResources = { "page:text": () => "from the resource" }
+  window.aiPrompts = { annotate: (args) => "ANNOTATE[" + (args.text || "empty") + "]" }
+  await mountWithPage({ card: {
+    prompts: [ { name: "annotate", description: "Annotate the page",
+                 arguments: [ { name: "text", required: false } ] } ],
+    resources: [ { uri: "page:text", name: "Text", description: "the text", volatility: "volatile" } ]
+  } })
+
+  const panel = document.getElementById("llm-meta-widget-chat")
+  const button = [ ...panel.querySelectorAll(".lmw-prompt") ].find((b) => /annotate/i.test(b.textContent))
+  button.dispatchEvent(new window.Event("click", { bubbles: true }))
+  await tick(140)
+
+  const user = (sentBodies.at(-1)?.messages || []).filter((m) => m.role === "user").at(-1)
+  assert.match(String(user?.content ?? ""), /ANNOTATE\[from aiState\]/)
+  delete window.aiState
+  delete window.aiResources
+  delete window.aiPrompts
+})
