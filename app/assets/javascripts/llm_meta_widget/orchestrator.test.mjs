@@ -959,7 +959,7 @@ const CATALOG = JSON.stringify({ dictionaries: [ { name: "uberon" } ] })
 
 test("resourceHints reads all three extension fields", () => {
   const h = resourceHints(withMeta({ sizeBytes: 1298, volatility: "volatile", autoAttach: false }))
-  assert.equal(h.sizeBytes, 1298)
+  assert.equal(h.size, 1298)
   assert.equal(h.volatility, "volatile")
   assert.equal(h.autoAttach, false)
 })
@@ -968,7 +968,7 @@ test("resourceHints defaults to stable and auto-attach when nothing is declared"
   // A hint-unaware server must behave exactly as it did before the
   // extension existed: attach once, on the first turn.
   const h = resourceHints({ uri: "x://y" })
-  assert.equal(h.sizeBytes, null)
+  assert.equal(h.size, null)
   assert.equal(h.volatility, "stable")
   assert.equal(h.autoAttach, true)
 })
@@ -986,9 +986,86 @@ test("resourceHints ignores a non-boolean autoAttach", () => {
   assert.equal(resourceHints(withMeta({ autoAttach: "false" })).autoAttach, true)
 })
 
-test("resourceHints reports an unusable sizeBytes as unknown, not zero", () => {
-  assert.equal(resourceHints(withMeta({ sizeBytes: "1298" })).sizeBytes, null)
-  assert.equal(resourceHints(withMeta({ sizeBytes: Infinity })).sizeBytes, null)
+test("resourceHints reports an unusable size as unknown, not zero", () => {
+  assert.equal(resourceHints(withMeta({ sizeBytes: "1298" })).size, null)
+  assert.equal(resourceHints(withMeta({ sizeBytes: Infinity })).size, null)
+  assert.equal(resourceHints({ uri: "x://y", size: "1298" }).size, null)
+  assert.equal(resourceHints({ uri: "x://y", size: Infinity }).size, null)
+})
+
+// SEP-0000 dropped its own `sizeBytes` and reuses the base Resource `size`
+// field, strengthened to "MUST be exact when present". Both spellings are read
+// for one release: a client that only understood the new one would lose its
+// budget gate against a server still on the old draft — PubDictionaries was,
+// when this landed.
+test("resourceHints reads size from the base Resource field", () => {
+  assert.equal(resourceHints({ uri: "x://y", size: 30026 }).size, 30026)
+})
+
+test("resourceHints still reads the earlier draft's _meta.sizeBytes", () => {
+  assert.equal(resourceHints(withMeta({ sizeBytes: 30026 })).size, 30026)
+})
+
+test("the base field wins when a server declares both", () => {
+  const entry = { ...withMeta({ sizeBytes: 999 }), size: 30026 }
+
+  assert.equal(resourceHints(entry).size, 30026)
+})
+
+// `size: 0` is a declared empty payload, not an absent one — and an empty
+// payload really is free. The distinction rests on `??` rather than `||`:
+// with `||` a declared 0 would fall through to the legacy field and a
+// zero-byte resource would inherit someone else's size.
+// orchestrator.js is a published entry point ("./orchestrator" in the package
+// exports), so anything these functions return is public API. Renaming the
+// field would therefore have been a breaking change; the old name is kept as an
+// alias for one release so 0.8.6 stays additive on BOTH sides — inputs accept
+// either spelling, outputs provide either. Both go at 0.9.0.
+test("the old field name still works on resourceHints", () => {
+  const h = resourceHints({ uri: "x://y", size: 30026 })
+
+  assert.equal(h.size, 30026)
+  assert.equal(h.sizeBytes, 30026)
+})
+
+test("the old field name still works on planResourceAttachment", () => {
+  // Easy to miss: this function rebuilds its own result object, so an alias on
+  // resourceHints does not reach it.
+  const over = planResourceAttachment({ uri: "x://y", size: 35318 }, 8000)
+  const fits = planResourceAttachment({ uri: "x://y", size: 100 }, 8000)
+
+  assert.equal(over.sizeBytes, 35318)
+  assert.equal(fits.sizeBytes, 100)
+})
+
+test("the alias reports unknown as null, like the field it mirrors", () => {
+  assert.equal(planResourceAttachment({ uri: "x://y" }, 8000).sizeBytes, null)
+  assert.equal(resourceHints({ uri: "x://y" }).sizeBytes, null)
+})
+
+test("a declared size of zero is kept, not treated as absent", () => {
+  assert.equal(resourceHints({ uri: "x://y", size: 0 }).size, 0)
+})
+
+test("a declared zero still wins over the earlier draft's field", () => {
+  const entry = { ...withMeta({ sizeBytes: 999 }), size: 0 }
+
+  assert.equal(resourceHints(entry).size, 0)
+})
+
+test("resourceHints survives an absent entry", () => {
+  // planResourceAttachment hands it whatever the server listed, and a
+  // malformed listing should not take the turn down with it.
+  assert.equal(resourceHints(undefined).size, null)
+  assert.equal(resourceHints(undefined).volatility, "stable")
+  assert.equal(resourceHints(null).autoAttach, true)
+})
+
+test("a budget gate works against either spelling", () => {
+  // The point of accepting both: neither an old nor a new server slips an
+  // over-budget resource past the gate during the migration.
+  assert.equal(planResourceAttachment({ uri: "x://y", size: 35318 }, 8000).reason, "over-budget")
+  assert.equal(planResourceAttachment(withMeta({ sizeBytes: 35318 }), 8000).reason, "over-budget")
 })
 
 test("planResourceAttachment attaches a resource that fits the budget", () => {

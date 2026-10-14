@@ -550,23 +550,33 @@ function parseSseFrame(raw) {
 }
 var STATIC_PRIMITIVES_META = "io.modelcontextprotocol/static-primitives";
 var VOLATILITIES = ["stable", "volatile"];
+var usableSize = (n) => typeof n === "number" && isFinite(n) ? n : null;
 function resourceHints(entry) {
   const meta = entry && entry._meta && entry._meta[STATIC_PRIMITIVES_META] || {};
   return {
     // A non-numeric or absent size means "unknown", never 0 — 0 would read
     // as a free resource and sail through every budget check.
-    sizeBytes: typeof meta.sizeBytes === "number" && isFinite(meta.sizeBytes) ? meta.sizeBytes : null,
+    // Base `size` wins; `_meta.sizeBytes` is the earlier draft's spelling and
+    // is accepted so a new client keeps its budget gate against an old server.
+    size: usableSize(entry && entry.size) ?? usableSize(meta.sizeBytes),
+    // Deprecated alias, kept for one release so renaming the field is not a
+    // breaking change: orchestrator.js is a published entry point, so anything
+    // it returns is public API. Dropped at 0.9.0 together with the
+    // `_meta.sizeBytes` fallback above — one deprecation, one bump.
+    get sizeBytes() {
+      return this.size;
+    },
     volatility: VOLATILITIES.indexOf(meta.volatility) === -1 ? "stable" : meta.volatility,
     autoAttach: typeof meta.autoAttach === "boolean" ? meta.autoAttach : true
   };
 }
 function planResourceAttachment(entry, budgetBytes) {
-  const { sizeBytes, volatility, autoAttach } = resourceHints(entry);
-  const base = { sizeBytes, volatility, uri: entry && entry.uri };
+  const { size, volatility, autoAttach } = resourceHints(entry);
+  const base = { size, sizeBytes: size, volatility, uri: entry && entry.uri };
   if (!autoAttach) {
     return { ...base, fetch: false, autoAttach: false, reason: "not-auto-attach" };
   }
-  if (sizeBytes !== null && sizeBytes > budgetBytes) {
+  if (size !== null && size > budgetBytes) {
     return { ...base, fetch: false, autoAttach: false, reason: "over-budget" };
   }
   return {
@@ -575,7 +585,7 @@ function planResourceAttachment(entry, budgetBytes) {
     autoAttach: true,
     // Unknown size still gets fetched, then trimmed — the trim is the
     // safety net for servers that do not declare a size.
-    reason: sizeBytes === null ? "size-unknown" : "within-budget"
+    reason: size === null ? "size-unknown" : "within-budget"
   };
 }
 function trimResourceText(text, maxBytes) {
@@ -4031,7 +4041,7 @@ function boot(cfg) {
           list: listMcpResources,
           read: readMcpResource,
           onSkip: function(plan) {
-            console.info("[llm_meta_widget] not attaching " + plan.uri + " (" + plan.reason + ", sizeBytes=" + plan.sizeBytes + ")");
+            console.info("[llm_meta_widget] not attaching " + plan.uri + " (" + plan.reason + ", size=" + plan.size + ")");
           }
         });
         if (loaded && loaded.plan && loaded.plan.fetch) {

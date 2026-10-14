@@ -623,7 +623,7 @@ function boot(cfg) {
   					read:        readMcpResource,
   					onSkip: function(plan) {
   						console.info("[llm_meta_widget] not attaching " + plan.uri +
-  						             " (" + plan.reason + ", sizeBytes=" + plan.sizeBytes + ")");
+  						             " (" + plan.reason + ", size=" + plan.size + ")");
   					}
   				});
   				// A volatile resource comes back with no context — it is read
