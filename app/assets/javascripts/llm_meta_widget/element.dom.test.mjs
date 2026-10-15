@@ -744,3 +744,26 @@ test("a present but unreadable typed block does not fall back to the id block", 
   assert.deepEqual(await localToolsAfterATurn(), [],
                    "a typed block that is present but broken must not resurrect the id block")
 })
+
+test("a card carrying both the media type and the legacy id is read once", async () => {
+  // A host in transition wants its page readable by the widget its visitors
+  // already have AND by the current one: the type for new widgets, the id for
+  // older ones. The card must not then be counted twice.
+  document.body.innerHTML = ""
+  const el = document.createElement("script")
+  el.type = CARD_MEDIA_TYPE
+  el.id = "ai-page"
+  el.textContent = JSON.stringify({ _meta: { "io.modelcontextprotocol/static-primitives": {
+    tools: [ { name: "both_channels", description: "d", inputSchema: {} } ]
+  } } })
+  document.body.appendChild(el)
+  const w = document.createElement("llm-meta-widget")
+  for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "" })) {
+    w.setAttribute(k, v)
+  }
+  document.body.appendChild(w)
+  await tick(60)
+
+  assert.deepEqual(await localToolsAfterATurn(), [ "both_channels" ],
+                   "declared once, so offered once")
+})
