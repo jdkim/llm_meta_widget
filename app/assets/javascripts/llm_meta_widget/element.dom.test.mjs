@@ -705,3 +705,42 @@ test("a typed block wins over an id-addressed one", async () => {
 
   assert.deepEqual(await localToolsAfterATurn(), [ "from_type" ])
 })
+
+test("one malformed block does not take the other blocks down with it", async () => {
+  // A page built from components has one card per component. A typo in one
+  // component's JSON must cost that component's primitives, not the page's.
+  document.body.innerHTML = ""
+  const bad = document.createElement("script")
+  bad.type = CARD_MEDIA_TYPE
+  bad.textContent = "{not json"
+  document.body.appendChild(bad)
+  putTypedCard({ tools: [ { name: "survivor", description: "d", inputSchema: {} } ] })
+  const el = document.createElement("llm-meta-widget")
+  for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "" })) {
+    el.setAttribute(k, v)
+  }
+  document.body.appendChild(el)
+  await tick(60)
+
+  assert.deepEqual(await localToolsAfterATurn(), [ "survivor" ])
+})
+
+test("a present but unreadable typed block does not fall back to the id block", async () => {
+  // The page said where its card is by setting the type. Reading the id block
+  // instead would silently serve primitives the page had replaced.
+  document.body.innerHTML = ""
+  putCard({ tools: [ { name: "stale_id_tool", description: "d", inputSchema: {} } ] })
+  const bad = document.createElement("script")
+  bad.type = CARD_MEDIA_TYPE
+  bad.textContent = "{not json"
+  document.body.appendChild(bad)
+  const el = document.createElement("llm-meta-widget")
+  for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "" })) {
+    el.setAttribute(k, v)
+  }
+  document.body.appendChild(el)
+  await tick(60)
+
+  assert.deepEqual(await localToolsAfterATurn(), [],
+                   "a typed block that is present but broken must not resurrect the id block")
+})
