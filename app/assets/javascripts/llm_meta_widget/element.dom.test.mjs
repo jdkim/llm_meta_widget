@@ -336,6 +336,19 @@ test("the host's configured model is kept even if it cannot call tools", async (
 //
 // Stage 1 is the card's TOOLS reaching the model. Prompts and resources are
 // parsed but not yet wired — they need read/get resolution against the page.
+const CARD_MEDIA_TYPE = "application/mcp-static-primitives+json"
+
+// The spec's locator: discovery is by media type, and the element needs no id.
+function putTypedCard(ext) {
+  const el = document.createElement("script")
+  el.type = CARD_MEDIA_TYPE
+  el.textContent = JSON.stringify({ _meta: { "io.modelcontextprotocol/static-primitives": ext } })
+  document.body.appendChild(el)
+  return el
+}
+
+// The escape hatch kept for a host that cannot set the type: an id-addressed
+// block of plain JSON. Read only when no typed block is present.
 function putCard(ext) {
   const el = document.createElement("script")
   el.type = "application/json"
@@ -356,10 +369,11 @@ function putActionsTag(tools) {
 
 // mount() clears document.body, so the tag has to go in after the element
 // exists; these drive the declaration path by re-mounting with it present.
-async function mountWithPage({ card, actions }) {
+async function mountWithPage({ card, actions, typedCards }) {
   document.body.innerHTML = ""
   if (actions) putActionsTag(actions)
   if (card) putCard(card)
+  for (const ext of typedCards || []) putTypedCard(ext)
   const el = document.createElement("llm-meta-widget")
   for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "" })) {
     el.setAttribute(k, v)
@@ -623,4 +637,71 @@ test("an explicit aiState reader wins over a page resource of the same name", as
   delete window.aiState
   delete window.aiResources
   delete window.aiPrompts
+})
+
+// ---- discovery by media type (SEP-0000 "HTML-delivery mode") -------------
+//
+// The media type is the locator. An id the page picks cannot be found by a
+// client that was not told it, which is the whole reason a Server Card needs no
+// canonical filename and a page card does.
+
+test("a card is found by its media type with no id at all", async () => {
+  await mountWithPage({ typedCards: [ { tools: [ { name: "typed_tool", description: "d", inputSchema: {} } ] } ] })
+
+  assert.deepEqual(await localToolsAfterATurn(), [ "typed_tool" ])
+})
+
+test("several typed blocks in one document merge", async () => {
+  await mountWithPage({ typedCards: [
+    { tools: [ { name: "from_first", description: "d", inputSchema: {} } ] },
+    { tools: [ { name: "from_second", description: "d", inputSchema: {} } ] }
+  ] })
+
+  assert.deepEqual((await localToolsAfterATurn()).sort(), [ "from_first", "from_second" ])
+})
+
+test("a duplicate tool name across blocks drops every copy", async () => {
+  // Not "first wins": which component is first depends on partial order, which
+  // the page author does not control. The author is told instead.
+  await mountWithPage({ typedCards: [
+    { tools: [ { name: "clash", description: "one", inputSchema: {} },
+               { name: "kept", description: "d", inputSchema: {} } ] },
+    { tools: [ { name: "clash", description: "two", inputSchema: {} } ] }
+  ] })
+
+  assert.deepEqual(await localToolsAfterATurn(), [ "kept" ])
+})
+
+test("a duplicate resource uri across blocks drops every copy", async () => {
+  window.aiResources = { "page:x": () => "value" }
+  await mountWithPage({ typedCards: [
+    { resources: [ { uri: "page:x", name: "X", description: "d" } ] },
+    { resources: [ { uri: "page:x", name: "X again", description: "d" } ] }
+  ] })
+
+  const panel = document.getElementById("llm-meta-widget-chat")
+  panel.querySelector("textarea").value = "hello"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(140)
+
+  const system = (sentBodies.at(-1)?.messages || []).find((m) => m.role === "system")
+  assert.doesNotMatch(String(system?.content ?? ""), /page:x|X again/)
+  delete window.aiResources
+})
+
+test("the id-addressed block is still read when no typed block exists", async () => {
+  await mountWithPage({ card: { tools: [ { name: "legacy_id_tool", description: "d", inputSchema: {} } ] } })
+
+  assert.deepEqual(await localToolsAfterATurn(), [ "legacy_id_tool" ])
+})
+
+test("a typed block wins over an id-addressed one", async () => {
+  // The id is an escape hatch, not a second channel: a page that sets the type
+  // has said where its card is.
+  await mountWithPage({
+    card: { tools: [ { name: "from_id", description: "d", inputSchema: {} } ] },
+    typedCards: [ { tools: [ { name: "from_type", description: "d", inputSchema: {} } ] } ]
+  })
+
+  assert.deepEqual(await localToolsAfterATurn(), [ "from_type" ])
 })

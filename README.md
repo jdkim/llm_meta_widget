@@ -424,7 +424,7 @@ an MCP server puts in its Server Card, so the page and the server describe
 themselves the same way.
 
 ```html
-<script type="application/json" id="ai-page">
+<script type="application/mcp-static-primitives+json">
 { "_meta": { "io.modelcontextprotocol/static-primitives": {
     "tools":     [ { "name": "set_text", "description": "…", "inputSchema": { } } ],
     "prompts":   [ { "name": "annotate", "description": "Annotate this page" } ],
@@ -465,6 +465,21 @@ asks for a URI, and because `https://` is reserved for resources a client can
 fetch from the web by itself — which page resources are not. The form is
 `page:<name>` with no path, because a page has only one namespace. Expect this to
 change.
+
+**The card is found by its media type.** A client matches
+`script[type="application/mcp-static-primitives+json"]`, so the element needs no
+`id`. This is how a client that was never told about your page can still read
+it, and it follows SEP-0000's "HTML-delivery mode". The `page_card_id:` option
+is kept only for a host that cannot set the type; it is read when no block with
+the media type is present.
+
+**A document may hold several blocks.** A page built from components can let
+each component declare its own primitives, and the arrays join by primitive
+type. Declaring the same tool or prompt `name`, or the same resource `uri`,
+twice is an error: every copy is dropped and a message is written to the
+console. The first one does not win, because which block comes first depends on
+the order the page's parts are rendered in, and that is not something the author
+chose.
 
 **The card is optional.** A page that declares nothing keeps working exactly as
 before, and a page that declares no `tools` still uses its `ai-actions` block.

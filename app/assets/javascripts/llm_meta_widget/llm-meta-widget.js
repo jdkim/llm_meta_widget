@@ -560,6 +560,25 @@ function parseSseFrame(raw) {
   return { name, data };
 }
 var STATIC_PRIMITIVES_META = "io.modelcontextprotocol/static-primitives";
+var PAGE_CARD_MEDIA_TYPE = "application/mcp-static-primitives+json";
+function mergeStaticPrimitivesCards(cards, warn = console.warn) {
+  const merged = { tools: [], prompts: [], resources: [] };
+  const keyOf = { tools: "name", prompts: "name", resources: "uri" };
+  for (const kind of ["tools", "prompts", "resources"]) {
+    const key = keyOf[kind];
+    const all = [];
+    for (const card of cards || []) all.push(...card && card[kind] || []);
+    const counts = /* @__PURE__ */ new Map();
+    for (const entry of all) counts.set(entry[key], (counts.get(entry[key]) || 0) + 1);
+    for (const [id, n] of counts) {
+      if (n > 1) {
+        warn(`[llm-meta-widget] the page declares ${kind} "${id}" ${n} times; dropping every copy \u2014 remove the duplicate to say which one you mean`);
+      }
+    }
+    merged[kind] = all.filter((entry) => counts.get(entry[key]) === 1);
+  }
+  return merged;
+}
 function readStaticPrimitivesCard(text, warn = console.warn) {
   const empty = { tools: [], prompts: [], resources: [] };
   if (typeof text !== "string" || text.trim() === "") return empty;
@@ -3900,8 +3919,18 @@ function boot(cfg) {
       model: MODEL
     });
   }
-  var pageCardEl = document.getElementById(PAGE_CARD_ID);
-  var pageCard = readStaticPrimitivesCard(pageCardEl ? pageCardEl.textContent : null);
+  var typedCards = document.querySelectorAll('script[type="' + PAGE_CARD_MEDIA_TYPE + '"]');
+  var pageCard;
+  if (typedCards.length) {
+    pageCard = mergeStaticPrimitivesCards(
+      Array.prototype.map.call(typedCards, function(el) {
+        return readStaticPrimitivesCard(el.textContent);
+      })
+    );
+  } else {
+    var pageCardEl = document.getElementById(PAGE_CARD_ID);
+    pageCard = readStaticPrimitivesCard(pageCardEl ? pageCardEl.textContent : null);
+  }
   var actionsSchemaEl = document.getElementById(ACTIONS_SCHEMA_ID);
   var localTools = pageCard.tools.length ? pageCard.tools : actionsSchemaEl ? JSON.parse(actionsSchemaEl.textContent) : [];
   var remoteToolsEl = document.getElementById(REMOTE_TOOLS_SCHEMA_ID);

@@ -879,6 +879,43 @@ export const STATIC_PRIMITIVES_META = "io.modelcontextprotocol/static-primitives
 // typo in it should cost that one entry, not the assistant. Everything
 // unparseable returns empty arrays and says so on the console, which is how
 // aiState already treats a reader missing its description.
+// The media type that locates a card inside an HTML document. It is the
+// locator, so it is NOT configurable: a client that has to be told where to
+// look cannot discover anything. SEP-0000, "HTML-delivery mode".
+export const PAGE_CARD_MEDIA_TYPE = "application/mcp-static-primitives+json"
+
+// Several blocks may appear in one document, so that a page assembled from
+// components can let each component declare its own primitives. The arrays
+// concatenate by primitive type.
+//
+// A duplicate identifier across blocks is an ERROR, not a precedence puzzle:
+// the spec says a client should report it and should not silently pick one. So
+// every copy of a duplicated identifier is dropped and the author is told.
+// Picking the first would make which component wins depend on DOM order, which
+// is not something a page author controls when the components are partials.
+export function mergeStaticPrimitivesCards(cards, warn = console.warn) {
+  const merged = { tools: [], prompts: [], resources: [] }
+  const keyOf = { tools: "name", prompts: "name", resources: "uri" }
+
+  for (const kind of [ "tools", "prompts", "resources" ]) {
+    const key = keyOf[kind]
+    const all = []
+    for (const card of cards || []) all.push(...((card && card[kind]) || []))
+
+    const counts = new Map()
+    for (const entry of all) counts.set(entry[key], (counts.get(entry[key]) || 0) + 1)
+
+    for (const [ id, n ] of counts) {
+      if (n > 1) {
+        warn(`[llm-meta-widget] the page declares ${kind} "${id}" ${n} times; ` +
+             "dropping every copy — remove the duplicate to say which one you mean")
+      }
+    }
+    merged[kind] = all.filter((entry) => counts.get(entry[key]) === 1)
+  }
+  return merged
+}
+
 export function readStaticPrimitivesCard(text, warn = console.warn) {
   const empty = { tools: [], prompts: [], resources: [] }
   if (typeof text !== "string" || text.trim() === "") return empty

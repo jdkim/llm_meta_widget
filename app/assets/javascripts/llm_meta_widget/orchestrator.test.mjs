@@ -20,7 +20,8 @@ import { resourceHints, planResourceAttachment, trimResourceText,
          STATIC_PRIMITIVES_META,
          parseSseStream, dispatchLocalToolCalls, runChatLoop, callMcpTool, fetchMcpManifest,
          listMcpPrompts, getMcpPrompt, listMcpResources, readMcpResource,
-         promptMessagesToText, readStaticPrimitivesCard, getPagePrompt, planPageResources, pageResourceLinesForTurn, pageResourceLine } from "./orchestrator.js"
+         promptMessagesToText, readStaticPrimitivesCard, getPagePrompt, planPageResources, pageResourceLinesForTurn, pageResourceLine,
+         mergeStaticPrimitivesCards, PAGE_CARD_MEDIA_TYPE } from "./orchestrator.js"
 
 // --- fixtures --------------------------------------------------------------
 
@@ -2056,4 +2057,62 @@ test("the argument summary shows a resource-filled slot as filled", () => {
 
 test("promptArgState called with nothing is harmless", () => {
   assert.equal(promptArgFromState("text", promptArgState()), "")
+})
+
+// --- merging several cards from one document -------------------------------
+
+test("cards from several blocks concatenate by primitive type", () => {
+  const merged = mergeStaticPrimitivesCards([
+    { tools: [ { name: "a" } ], prompts: [], resources: [ { uri: "page:x" } ] },
+    { tools: [ { name: "b" } ], prompts: [ { name: "p" } ], resources: [] }
+  ], () => {})
+
+  assert.deepEqual(merged.tools.map((t) => t.name), [ "a", "b" ])
+  assert.deepEqual(merged.prompts.map((p) => p.name), [ "p" ])
+  assert.deepEqual(merged.resources.map((r) => r.uri), [ "page:x" ])
+})
+
+test("a duplicate name drops every copy and reports it", () => {
+  const said = []
+  const merged = mergeStaticPrimitivesCards([
+    { tools: [ { name: "clash", description: "one" }, { name: "kept" } ] },
+    { tools: [ { name: "clash", description: "two" } ] }
+  ], (m) => said.push(m))
+
+  assert.deepEqual(merged.tools.map((t) => t.name), [ "kept" ],
+                   "neither copy may be picked — DOM order is not an authoring decision")
+  assert.equal(said.length, 1)
+  assert.match(said[0], /clash/)
+})
+
+test("a duplicate resource is keyed by uri, not by name", () => {
+  // Two resources may legitimately share a display name; the uri is the
+  // identifier resources/read takes, so only a uri clash is a duplicate.
+  const merged = mergeStaticPrimitivesCards([
+    { resources: [ { uri: "page:a", name: "Same label" } ] },
+    { resources: [ { uri: "page:b", name: "Same label" } ] }
+  ], () => {})
+
+  assert.deepEqual(merged.resources.map((r) => r.uri), [ "page:a", "page:b" ])
+})
+
+test("a tool and a prompt may share a name", () => {
+  // Different primitive types are different namespaces: tools/call and
+  // prompts/get never consult the same map.
+  const merged = mergeStaticPrimitivesCards([
+    { tools: [ { name: "annotate" } ], prompts: [ { name: "annotate" } ] }
+  ], () => {})
+
+  assert.equal(merged.tools.length, 1)
+  assert.equal(merged.prompts.length, 1)
+})
+
+test("merging nothing yields empty arrays, not undefined", () => {
+  const merged = mergeStaticPrimitivesCards(undefined, () => {})
+
+  assert.deepEqual(merged, { tools: [], prompts: [], resources: [] })
+})
+
+test("the media type is the one the spec names", () => {
+  assert.equal(PAGE_CARD_MEDIA_TYPE, "application/mcp-static-primitives+json")
 })

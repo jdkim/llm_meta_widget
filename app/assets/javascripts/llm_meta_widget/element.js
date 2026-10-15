@@ -25,7 +25,8 @@ import { runChatLoop, fetchMcpManifest, listMcpPrompts, getMcpPrompt,
          createConversationStore, conversationKeyFor,
          readStaticPrimitivesCard, getPagePrompt,
          planPageResources, pageResourceLinesForTurn,
-         promptArgState } from "./orchestrator.js";
+         promptArgState, mergeStaticPrimitivesCards,
+         PAGE_CARD_MEDIA_TYPE } from "./orchestrator.js";
 import { marked } from "./marked.esm.js";
 import { readConfig } from "./config.js";
 import conversationCss from "../../stylesheets/llm_meta_widget/conversation.css";
@@ -306,8 +307,24 @@ function boot(cfg) {
   	// older #ai-actions schema tag rather than merging with it: two sources
   	// for one list means a reader has to work out which the page meant, and a
   	// handler in window.aiActions answers to a name either way.
-  	var pageCardEl = document.getElementById(PAGE_CARD_ID);
-  	var pageCard = readStaticPrimitivesCard(pageCardEl ? pageCardEl.textContent : null);
+  	//
+  	// Discovery is by MEDIA TYPE, which is the locator the spec defines: an id
+  	// the page chooses cannot be found by a client that was not told it.
+  	// Several blocks may appear, so a page built from components can let each
+  	// one declare its own primitives. `page-card-id` survives only as an escape
+  	// hatch for a host that cannot set the type, and is read when no typed
+  	// block is present.
+  	var typedCards = document.querySelectorAll('script[type="' + PAGE_CARD_MEDIA_TYPE + '"]');
+  	var pageCard;
+  	if (typedCards.length) {
+  		pageCard = mergeStaticPrimitivesCards(
+  			Array.prototype.map.call(typedCards, function(el) {
+  				return readStaticPrimitivesCard(el.textContent);
+  			}));
+  	} else {
+  		var pageCardEl = document.getElementById(PAGE_CARD_ID);
+  		pageCard = readStaticPrimitivesCard(pageCardEl ? pageCardEl.textContent : null);
+  	}
   	var actionsSchemaEl = document.getElementById(ACTIONS_SCHEMA_ID);
   	var localTools = pageCard.tools.length
   		? pageCard.tools
