@@ -3,6 +3,33 @@
 This file starts at 0.8.0, the first release with a breaking change worth
 calling out. Earlier releases are in the git history (`git log --oneline v0.7.6`).
 
+## 0.11.0
+
+### Added: a page can say where its handlers live
+
+A page card can declare the global that holds its handler maps, the way a
+Server Card declares its endpoint:
+
+```json
+"remotes": [ { "type": "page-global", "global": "mcp" } ]
+```
+
+```js
+window.mcp = { tools: { }, prompts: { }, resources: { } };
+```
+
+A consumer that parses the card can then find the handlers and dispatch to
+them. `window.aiActions`, `window.aiPrompts` and `window.aiResources` are names
+only this widget knows, and they are configurable per page, so nothing outside
+could rely on them.
+
+**Existing pages keep working.** When the card declares no transport, the three
+globals are read as before, and each kind falls back on its own — so tools can
+move into the declared global while prompts and resources stay where they are.
+
+Two blocks declaring different globals is an authoring error: the first is
+used and the other is reported to the console.
+
 ## 0.10.1
 
 Documentation only. The 0.10.0 release notes and the README section on the page

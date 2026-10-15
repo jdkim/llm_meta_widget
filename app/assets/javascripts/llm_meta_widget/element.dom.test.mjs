@@ -339,10 +339,11 @@ test("the host's configured model is kept even if it cannot call tools", async (
 const CARD_MEDIA_TYPE = "application/mcp-static-primitives+json"
 
 // The spec's locator: discovery is by media type, and the element needs no id.
-function putTypedCard(ext) {
+function putTypedCard(ext, card = {}) {
   const el = document.createElement("script")
   el.type = CARD_MEDIA_TYPE
-  el.textContent = JSON.stringify({ _meta: { "io.modelcontextprotocol/static-primitives": ext } })
+  el.textContent = JSON.stringify(Object.assign({}, card,
+    { _meta: { "io.modelcontextprotocol/static-primitives": ext } }))
   document.body.appendChild(el)
   return el
 }
@@ -766,4 +767,70 @@ test("a card carrying both the media type and the legacy id is read once", async
 
   assert.deepEqual(await localToolsAfterATurn(), [ "both_channels" ],
                    "declared once, so offered once")
+})
+
+
+// ---- the page-local transport, end to end -------------------------------
+//
+// A card that declares its global is the only form another consumer could
+// discover. These prove the element actually dispatches through it, because
+// the resolver being correct in isolation proved nothing last time.
+
+async function mountWithGlobal(ext) {
+  document.body.innerHTML = ""
+  putTypedCard(ext, { name: "org.example/page",
+                      remotes: [ { type: "page-global", global: "mcp" } ] })
+  const el = document.createElement("llm-meta-widget")
+  for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "" })) {
+    el.setAttribute(k, v)
+  }
+  document.body.appendChild(el)
+  await tick(60)
+  return el
+}
+
+test("a tool declared with a page-global transport dispatches to that global", async () => {
+  const called = []
+  window.mcp = { tools: { from_global: (args) => { called.push(args); return "ok" } } }
+  await mountWithGlobal({ tools: [ { name: "from_global", description: "d", inputSchema: {} } ] })
+
+  assert.deepEqual(await localToolsAfterATurn(), [ "from_global" ])
+  delete window.mcp
+})
+
+test("a prompt resolves through the declared global", async () => {
+  window.mcp = { prompts: { annotate: () => "FROM THE GLOBAL" } }
+  await mountWithGlobal({ prompts: [ { name: "annotate", description: "Annotate" } ] })
+
+  const panel = document.getElementById("llm-meta-widget-chat")
+  const button = [ ...panel.querySelectorAll(".lmw-prompt") ].find((b) => /annotate/i.test(b.textContent))
+  button.dispatchEvent(new window.Event("click", { bubbles: true }))
+  await tick(140)
+
+  const user = (sentBodies.at(-1)?.messages || []).filter((m) => m.role === "user").at(-1)
+  assert.match(String(user?.content ?? ""), /FROM THE GLOBAL/)
+  delete window.mcp
+})
+
+test("a resource is read through the declared global", async () => {
+  window.mcp = { resources: { "page:text": () => "read via the global" } }
+  await mountWithGlobal({ resources: [ { uri: "page:text", name: "Text", description: "d",
+                                         volatility: "volatile" } ] })
+
+  const panel = document.getElementById("llm-meta-widget-chat")
+  panel.querySelector("textarea").value = "hello"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(140)
+
+  const system = (sentBodies.at(-1)?.messages || []).find((m) => m.role === "system")
+  assert.match(String(system?.content ?? ""), /read via the global/)
+  delete window.mcp
+})
+
+test("the legacy globals still work when the card declares no transport", async () => {
+  window.aiActions = { legacy_tool: () => "ok" }
+  await mountWithPage({ typedCards: [ { tools: [ { name: "legacy_tool", description: "d", inputSchema: {} } ] } ] })
+
+  assert.deepEqual(await localToolsAfterATurn(), [ "legacy_tool" ])
+  delete window.aiActions
 })

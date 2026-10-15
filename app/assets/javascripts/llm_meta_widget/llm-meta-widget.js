@@ -561,8 +561,50 @@ function parseSseFrame(raw) {
 }
 var STATIC_PRIMITIVES_META = "io.modelcontextprotocol/static-primitives";
 var PAGE_CARD_MEDIA_TYPE = "application/mcp-static-primitives+json";
+var PAGE_GLOBAL_TRANSPORT = "page-global";
+function declaredPageGlobal(card) {
+  for (const remote of card && card.remotes || []) {
+    if (!remote || remote.type !== PAGE_GLOBAL_TRANSPORT) continue;
+    if (typeof remote.global === "string" && remote.global.trim() !== "") return remote.global.trim();
+  }
+  return null;
+}
+function pageHandlers({ card, scope = {}, legacy = {}, warn = console.warn } = {}) {
+  const name = declaredPageGlobal(card);
+  const declared = name ? scope[name] : null;
+  if (name && !declared) {
+    warn(`[llm-meta-widget] the page card declares global "${name}", but window.${name} is not defined \u2014 is the script that defines it loaded, and did it run?`);
+  }
+  const isMap = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  const pick = (kind, legacyName) => {
+    const fromGlobal = declared ? declared[kind] : void 0;
+    if (isMap(fromGlobal)) return fromGlobal;
+    if (declared && fromGlobal !== void 0 && !isMap(fromGlobal)) {
+      warn(`[llm-meta-widget] window.${name}.${kind} is ${Array.isArray(fromGlobal) ? "an array" : typeof fromGlobal}; it must be an object keyed by ${kind === "resources" ? "uri" : "name"}`);
+    }
+    return legacyName && scope[legacyName] || {};
+  };
+  return {
+    global: name,
+    tools: pick("tools", legacy.tools),
+    prompts: pick("prompts", legacy.prompts),
+    resources: pick("resources", legacy.resources)
+  };
+}
 function mergeStaticPrimitivesCards(cards, warn = console.warn) {
-  const merged = { tools: [], prompts: [], resources: [] };
+  const merged = { remotes: [], tools: [], prompts: [], resources: [] };
+  for (const card of cards || []) {
+    for (const remote of card && card.remotes || []) {
+      const clash = merged.remotes.find((r) => r.type === remote.type && r.global !== remote.global);
+      if (clash) {
+        warn(`[llm-meta-widget] two blocks declare different ${remote.type} globals ("${clash.global}" and "${remote.global}"); using "${clash.global}"`);
+        continue;
+      }
+      if (!merged.remotes.some((r) => r.type === remote.type && r.global === remote.global)) {
+        merged.remotes.push(remote);
+      }
+    }
+  }
   const keyOf = { tools: "name", prompts: "name", resources: "uri" };
   for (const kind of ["tools", "prompts", "resources"]) {
     const key = keyOf[kind];
@@ -580,7 +622,7 @@ function mergeStaticPrimitivesCards(cards, warn = console.warn) {
   return merged;
 }
 function readStaticPrimitivesCard(text, warn = console.warn) {
-  const empty = { tools: [], prompts: [], resources: [] };
+  const empty = { remotes: [], tools: [], prompts: [], resources: [] };
   if (typeof text !== "string" || text.trim() === "") return empty;
   let doc;
   try {
@@ -600,6 +642,8 @@ function readStaticPrimitivesCard(text, warn = console.warn) {
     return ok;
   });
   return {
+    // The whole card's transport, so what it declares survives the parse.
+    remotes: Array.isArray(doc.remotes) ? doc.remotes : [],
     tools: named(ext.tools, "tool"),
     prompts: named(ext.prompts, "prompt"),
     // Resources are addressed by uri, not name — resources/read takes the uri.
@@ -3931,6 +3975,11 @@ function boot(cfg) {
     var pageCardEl = document.getElementById(PAGE_CARD_ID);
     pageCard = readStaticPrimitivesCard(pageCardEl ? pageCardEl.textContent : null);
   }
+  var handlers = pageHandlers({
+    card: pageCard,
+    scope: window,
+    legacy: { tools: ACTIONS_GLOBAL, prompts: PROMPTS_GLOBAL, resources: RESOURCES_GLOBAL }
+  });
   var actionsSchemaEl = document.getElementById(ACTIONS_SCHEMA_ID);
   var localTools = pageCard.tools.length ? pageCard.tools : actionsSchemaEl ? JSON.parse(actionsSchemaEl.textContent) : [];
   var remoteToolsEl = document.getElementById(REMOTE_TOOLS_SCHEMA_ID);
@@ -4207,7 +4256,7 @@ function boot(cfg) {
   function argState() {
     return promptArgState({
       entries: pageCard.resources,
-      resources: window[RESOURCES_GLOBAL] || {},
+      resources: handlers.resources,
       state: window[STATE_GLOBAL] || {}
     });
   }
@@ -4307,7 +4356,7 @@ function boot(cfg) {
     }
     button.disabled = true;
     try {
-      var result = prompt.source === "page" ? await getPagePrompt({ name: prompt.name, args, prompts: window[PROMPTS_GLOBAL] }) : await getMcpPrompt({ endpoint: prompt.endpoint, name: prompt.name, args });
+      var result = prompt.source === "page" ? await getPagePrompt({ name: prompt.name, args, prompts: handlers.prompts }) : await getMcpPrompt({ endpoint: prompt.endpoint, name: prompt.name, args });
       var text = promptMessagesToText(result);
       if (!text) {
         appendTurn("error", "The server returned an empty prompt.");
@@ -4523,7 +4572,7 @@ function boot(cfg) {
     resourceContext = turn.cached;
     var page = await pageResourceLinesForTurn({
       plans: pageResourcePlans,
-      resources: window[RESOURCES_GLOBAL],
+      resources: handlers.resources,
       budgetBytes: RESOURCE_BUDGET_BYTES,
       cache: pageResourceCache
     });
@@ -4585,7 +4634,7 @@ function boot(cfg) {
         localTools,
         remoteTools,
         hostWideTools,
-        aiActions: window[ACTIONS_GLOBAL] || {},
+        aiActions: handlers.tools,
         maxRounds: MAX_ROUNDS,
         provider: LLM_PROVIDER === "ollama" ? "ollama" : "hub",
         signal: currentAbort.signal,

@@ -61,7 +61,7 @@ Option 3 if it does not.
 
 ```ruby
 # Gemfile
-gem "llm_meta_widget", "~> 0.10.1"
+gem "llm_meta_widget", "~> 0.11.0"
 ```
 
 ```bash
@@ -152,22 +152,22 @@ The widget is a custom element in a single self-contained ES module, so the
 whole integration is two lines of HTML:
 
 ```html
-<script type="module" src="https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.10"></script>
+<script type="module" src="https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.11"></script>
 <llm-meta-widget llm-url="https://your-meta-server.example"
                  model="gpt-oss-120b"
                  greeting="Hi — ask me anything about this page."></llm-meta-widget>
 ```
 
-**`@0.10` is a version range, and it stops at 0.10.x on purpose.** You receive
+**`@0.11` is a version range, and it stops at 0.11.x on purpose.** You receive
 bug fixes without editing your page, and a release that breaks your page cannot
 arrive on its own.
 
-Moving to 0.11 is therefore a change you make yourself. Read
+Moving to 0.12 is therefore a change you make yourself. Read
 [CHANGELOG.md](CHANGELOG.md) before you do, because this is where what your page
 must provide can change. For example, 0.10.0 changed how the widget finds a page
 card: by media type rather than by element id. A page that declared its card the
-new way while still loading `@0.9` lost every tool, prompt and resource it
-declared, with nothing failing anywhere — see the CHANGELOG entry for 0.10.0.
+new way while still loading `@0.9` lost every tool, prompt and resource it had
+declared. Nothing failed, anywhere. The CHANGELOG entry for 0.10.0 describes it.
 
 A Rails app is protected from that mismatch, because the `Gemfile` will not
 resolve a widget version the page cannot use. A page that loads the widget from
@@ -266,7 +266,10 @@ primitive type:
 
 ```html
 <script type="application/mcp-static-primitives+json">
-{ "_meta": { "io.modelcontextprotocol/static-primitives": {
+{
+  "name": "org.example/your-page",
+  "remotes": [ { "type": "page-global", "global": "mcp" } ],
+  "_meta": { "io.modelcontextprotocol/static-primitives": {
     "tools": [
       { "name": "add_dictionaries",
         "description": "Add the named dictionaries to the current selection.",
@@ -281,19 +284,27 @@ primitive type:
         "description": "the dictionaries the user has chosen for annotation",
         "volatility": "volatile" }
     ]
-} } }
+  } }
+}
 </script>
 
 <script>
-  // Each map is keyed by the identifier its own MCP operation takes: a tool by
-  // name, a resource by uri.
-  window.aiActions   = { add_dictionaries: function (args) { /* mutate the page */ } };
-  window.aiResources = { "page:selected_dictionaries": function () { return getSelected(); } };
+  // The card named this global; each map inside it is keyed by the identifier
+  // its own MCP operation takes — a tool by name, a resource by uri.
+  window.mcp = {
+    tools:     { add_dictionaries: function (args) { /* mutate the page */ } },
+    resources: { "page:selected_dictionaries": function () { return getSelected(); } }
+  };
 </script>
 ```
 
 A tool's schema may be spelled `inputSchema`, as MCP spells it, or
 `input_schema`. Both are accepted.
+
+`remotes` is how a consumer other than this widget finds your handlers, so the
+global is declared rather than assumed. Leave it out and the widget reads
+`window.aiActions`, `window.aiPrompts` and `window.aiResources` instead — see
+"Say where your handlers live".
 
 A page may declare `prompts` in the same block. See [The page card](#the-page-card)
 for prompts, for the size and volatility hints on a resource, and for what
@@ -354,9 +365,9 @@ resources.
 ```
 
 Where both a card and these blocks exist, the card's `tools` replace the
-`#ai-actions` block rather than merging with it: two sources for one list would
-leave a reader working out which the page meant. An explicit `window.aiState`
-entry wins over a page resource of the same name, for the same reason.
+`#ai-actions` block. They are not merged. Two sources for one list would leave a
+reader guessing which one the page meant. For the same reason, an explicit
+`window.aiState` entry is used in place of a page resource of the same name.
 
 **Breaking change in 0.8.0.** An `aiState` reader must be
 `{ description, read }`. The bare-function form — `text: function() {…}` — is
@@ -366,13 +377,15 @@ working. Descriptions are not decoration: every other channel the widget
 declares to the model already carries one, and state readers were the exception.
 
 **When the tool_call fires.** During the turn, as soon as the LLM emits the
-call. Since 0.4.0 the action's outcome — `{ok: true, applied: "<name>"}`, or
-the error message if it raised — is fed back to the LLM as a tool result, and
-the turn continues. Before 0.4.0 these were fire-and-forget, which meant a
-turn whose only calls were page actions ended there: any task shaped *change
-the page, then do something with it* was cut off after the write. The change
-also means the LLM can see that an action failed and correct itself, instead
-of the failure being visible only to the visitor.
+call. Since 0.4.0 the action's result is given back to the model and the turn
+continues. The result is `{ok: true, applied: "<name>"}`, or the error message
+if the action raised one.
+
+Before 0.4.0 the widget did not wait for that result. A turn whose only calls
+were page actions therefore ended at the write, and a task of the form *change
+the page, then do something with it* stopped half way. The model can now also
+see that an action failed and correct itself, instead of the failure being
+visible only to the visitor.
 
 Budget for it: every page action now costs a round, so a flow that writes twice
 and then calls a tool needs roughly five or six. See `max_rounds:` below.
@@ -404,11 +417,11 @@ Declared once per host origin via a well-known manifest. Widget fetches the mani
 
 **Auto-discovery.** By default the widget fetches `<same-origin>/.well-known/mcp.json` at boot. To override, pass `well_known_urls:` to the helper: an explicit array (e.g. `["https://other.example/.well-known/mcp.json"]`) or `[]` to disable entirely.
 
-**What the LLM sees.** Every tool listed in every discovered manifest is exposed as a callable. Names must be unique across manifests (if a name collides with a Class 1 or Class 3 tool, Class 3 wins, then Class 2, then Class 1).
+**What the LLM sees.** Every tool listed in every discovered manifest is offered to the model. Names must be unique across manifests. If two classes declare the same name, the widget uses Class 3 first, then Class 2, then Class 1.
 
-**When the tool_call fires.** Synchronously during the turn — widget POSTs `{ jsonrpc, method: "tools/call", params: { name, arguments } }` to the tool's URL, awaits the JSON-RPC response, and feeds the result back to the LLM as tool output for the next round. Standard MCP loop.
+**When the tool_call fires.** During the turn. The widget POSTs `{ jsonrpc, method: "tools/call", params: { name, arguments } }` to the tool's URL and waits for the JSON-RPC response. It then gives the result to the model as tool output for the next round. This is the standard MCP loop.
 
-**Error path.** HTTP 4xx/5xx, network failure, or an MCP JSON-RPC error → widget marks that dispatch as errored; visitor sees a red chip in the message footer; the LLM's next round sees the error as the tool's return value (so it can explain what went wrong instead of pretending it worked).
+**Error path.** An HTTP 4xx or 5xx, a network failure, or an MCP JSON-RPC error all count as a failed call. The visitor sees a red chip in the message footer. The model receives the error as the tool's return value, so it can explain what went wrong instead of pretending the call worked.
 
 ### Class 1 — Hub-registered MCP (via the meta-server)
 
@@ -418,9 +431,9 @@ Declared out-of-band on the meta-server (via the hub's admin UI or `/user/:id/mc
 
 **What the LLM sees.** Only tools the visitor has **enabled via the tool picker** (see "Level-1 pickers" below) — nothing is auto-selected, the visitor opts in per session. A page can set the starting selection instead, with `remote_tools_schema_id:`: those tools arrive already ticked, and the visitor can still untick them.
 
-**When the tool_call fires.** Synchronously during the turn — widget POSTs to the hub's `/api/llm_api_keys/:uuid/models/:name/single_llm_calls` endpoint with `tool_ids: [...]`; the hub proxies to each MCP server and streams results back through SSE.
+**When the tool_call fires.** During the turn. The widget POSTs to the hub's `/api/llm_api_keys/:uuid/models/:name/single_llm_calls` endpoint with `tool_ids: [...]`. The hub calls each MCP server and streams the results back over SSE.
 
-**Error path.** Hub-side errors (rate limit, timeout, MCP server unavailable, upstream failure) arrive as SSE `event: error` frames with typed codes (`mcp_unavailable`, `timeout`, `rate_limit`, …); the widget surfaces them in the message bubble with a per-code prefix.
+**Error path.** Errors from the hub arrive as SSE `event: error` frames, each with a code such as `mcp_unavailable`, `timeout` or `rate_limit`. They cover a rate limit, a timeout, an MCP server that is unavailable, and a failure further upstream. The widget shows each one in the message bubble, with a prefix for its code.
 
 ## Level-1 pickers
 
@@ -486,35 +499,49 @@ translate directly.
 ## The page card
 
 Since 0.9.0 a page can declare what it offers in one block of JSON, instead of
-using a separate channel for each kind of thing. The block uses the same envelope
-an MCP server puts in its Server Card, so the page and the server describe
-themselves the same way. Since 0.10.0 that block is found by its media type; see
-"The card is found by its media type" below.
+using a separate channel for each kind of thing. **That block is a Server Card** —
+the same document an MCP server publishes — whose transport is the page itself.
+So the page and the server describe themselves in one format, and one parser
+reads both.
+
+Since 0.10.0 the block is found by its media type. Since 0.11.0 a page can also
+name the global that holds its handlers. Both are below.
 
 ```html
 <script type="application/mcp-static-primitives+json">
-{ "_meta": { "io.modelcontextprotocol/static-primitives": {
+{
+  "name": "org.example/your-page",
+  "remotes": [ { "type": "page-global", "global": "mcp" } ],
+  "_meta": { "io.modelcontextprotocol/static-primitives": {
     "tools":     [ { "name": "set_text", "description": "…", "inputSchema": { } } ],
     "prompts":   [ { "name": "annotate", "description": "Annotate this page" } ],
     "resources": [ { "uri": "page:text", "name": "Text", "description": "the text to annotate",
                      "volatility": "volatile" } ]
-} } }
+  } }
+}
 </script>
 ```
 
-The card says what exists. Three global objects say what it does, and each one is
-keyed by the identifier that the matching MCP operation takes:
+`name` identifies the card, as it does for a server. `remotes` says where the
+handlers live — see "Say where your handlers live" below. Only the `_meta`
+block is required by this widget; the rest is what makes the card readable by
+anything else.
+
+The card says what exists. Three maps say what it does, and each one is keyed by
+the identifier that the matching MCP operation takes:
 
 | declared in the card | implemented in | keyed by |
 |---|---|---|
-| `tools` | `window.aiActions` | tool `name`, as `tools/call` takes |
-| `prompts` | `window.aiPrompts` | prompt `name`, as `prompts/get` takes |
-| `resources` | `window.aiResources` | resource `uri`, as `resources/read` takes |
+| `tools` | `tools` under your declared global, else `window.aiActions` | tool `name`, as `tools/call` takes |
+| `prompts` | `prompts` under it, else `window.aiPrompts` | prompt `name`, as `prompts/get` takes |
+| `resources` | `resources` under it, else `window.aiResources` | resource `uri`, as `resources/read` takes |
 
 ```js
-window.aiActions   = { set_text: (args) => { /* change the page */ } }
-window.aiPrompts   = { annotate: (args) => "Annotate this: " + args.text }
-window.aiResources = { "page:text": () => document.querySelector("#text").value }
+window.mcp = {
+  tools:     { set_text: (args) => { /* change the page */ } },
+  prompts:   { annotate: (args) => "Annotate this: " + args.text },
+  resources: { "page:text": () => document.querySelector("#text").value }
+}
 ```
 
 A prompt handler may return a plain string or the full `messages` array that
@@ -533,6 +560,37 @@ asks for a URI, and because `https://` is reserved for resources a client can
 fetch from the web by itself — which page resources are not. The form is
 `page:<name>` with no path, because a page has only one namespace. Expect this to
 change.
+
+**Say where your handlers live.** A card can declare the global that holds
+them, the way a Server Card declares its endpoint. Then a consumer that has
+never heard of this widget can read your card, find your handlers and call
+them:
+
+```html
+<script type="application/mcp-static-primitives+json">
+{ "name": "org.example/your-page",
+  "remotes": [ { "type": "page-global", "global": "mcp" } ],
+  "_meta": { "io.modelcontextprotocol/static-primitives": { "tools": [ ... ] } } }
+</script>
+<script>
+  window.mcp = {
+    tools:     { set_text: function (args) { } },
+    prompts:   { annotate: function (args) { return "..." } },
+    resources: { "page:text": function () { return "..." } }
+  };
+</script>
+```
+
+The name is yours to choose, and it is declared rather than assumed: this code
+runs on your page, where a short fixed name such as `mcp` could collide with
+something of your own.
+
+Without that declaration the widget reads `window.aiActions`,
+`window.aiPrompts` and `window.aiResources`, as before. Those names are known
+only to this widget, and they can be renamed per page with the options below,
+so no other consumer can rely on them. Each kind falls back on its own, so you
+can move tools into the declared global and leave prompts and resources where
+they are.
 
 **The card is found by its media type.** A client matches
 `script[type="application/mcp-static-primitives+json"]`, so the element needs no
@@ -559,15 +617,15 @@ loses the conversation. The transcript, the record of which tools ran, and the
 model's own context are kept in `sessionStorage`: per tab, gone when the tab
 closes, never sent anywhere.
 
-The key is the page's **path**, not its full URL, so a form submit that returns
-to the same page with a new query string keeps the thread, while moving to a
-different page starts a fresh one. Nothing to configure.
+The key is the page's **path**, not its full URL. A form submit that returns to
+the same page with a new query string therefore keeps the same conversation.
+Moving to a different page starts a new one. There is nothing to configure.
 
 Two consequences worth knowing. An action of yours that navigates is now safe
 to declare — before this, offering one meant offering to wipe the visitor's
-chat. And if the navigation lands on an error page that does not render the
-widget, the conversation is still in storage but there is no panel to show it
-until the visitor returns to a page that has one.
+chat. And if the navigation lands on an error page that renders no widget, the
+conversation is still in storage. There is no panel to show it until the visitor
+returns to a page that has one.
 
 ## Choosing what answers the chat, and whose tools to offer
 
@@ -592,12 +650,14 @@ does is what its call site says.
                     model: "qwen3.8:27b") %>
 ```
 
-**The Ollama path.** The widget POSTs to `{llm_url}/api/chat` and reads
-Ollama's NDJSON stream; tool schemas go over as OpenAI-shaped functions and
-`tool_calls` come back, so Class 2 and Class 3 tools work exactly as they do
-against a hub. The model picker lists `{llm_url}/api/tags`. Ollama must be
-told to accept your page's origin — `OLLAMA_ORIGINS=https://your-site.example`
-— which is the same CORS story as the hub, configured elsewhere.
+**The Ollama path.** The widget POSTs to `{llm_url}/api/chat` and reads Ollama's
+NDJSON stream. Tool schemas are sent in OpenAI's shape, and `tool_calls` come
+back the same way, so Class 2 and Class 3 tools work exactly as they do against
+a hub. The model picker lists `{llm_url}/api/tags`.
+
+Ollama must be told to accept your page's origin:
+`OLLAMA_ORIGINS=https://your-site.example`. This is the same CORS requirement
+as the hub has, set in a different place.
 
 What you give up without a `tool_hub_url` is Class 1 only: tools registered on
 somebody's hub. That is not "no tools" — page actions and your own
@@ -650,9 +710,9 @@ that predates the extension: the resource is fetched, trimmed to budget and
 carried in the model's context.
 
 A prompt is offered as a button labelled by its `title`. Declare its arguments
-as **optional** and fill them from page state where you can: an argument the
-visitor must supply by hand makes the button useless to the visitor who needed
-it most, since they must already know your form to press it.
+as **optional**, and fill them from page state where you can. An argument the
+visitor must type in makes the button useless to the visitor who needed it most:
+to press it, they would already have to know your form.
 
 ## Further reading
 

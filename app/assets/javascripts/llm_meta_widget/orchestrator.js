@@ -884,6 +884,62 @@ export const STATIC_PRIMITIVES_META = "io.modelcontextprotocol/static-primitives
 // look cannot discover anything. SEP-0000, "HTML-delivery mode".
 export const PAGE_CARD_MEDIA_TYPE = "application/mcp-static-primitives+json"
 
+// The transport an HTML-delivered Server Card declares: a JavaScript global
+// under which the handler maps live. A Server Card always states its endpoint
+// rather than relying on a convention, and a page card states its global the
+// same way — so a consumer that has never heard of this widget can parse the
+// card, find the handlers and dispatch. The three legacy globals
+// (aiActions/aiPrompts/aiResources) are names only this widget knows, and are
+// configurable per page, so nothing outside could rely on them.
+export const PAGE_GLOBAL_TRANSPORT = "page-global"
+
+export function declaredPageGlobal(card) {
+  for (const remote of (card && card.remotes) || []) {
+    if (!remote || remote.type !== PAGE_GLOBAL_TRANSPORT) continue
+    if (typeof remote.global === "string" && remote.global.trim() !== "") return remote.global.trim()
+  }
+  return null
+}
+
+// Resolves the three handler maps. A declared global wins; each map falls back
+// to its legacy global independently, so a page part-way through moving over
+// keeps working instead of losing the primitives it has not moved yet.
+export function pageHandlers({ card, scope = {}, legacy = {}, warn = console.warn } = {}) {
+  const name = declaredPageGlobal(card)
+  const declared = name ? scope[name] : null
+
+  // A card that names a global the page never defines is almost always a load
+  // order problem, or a script that threw before it got there. Falling back in
+  // silence hides that: the page then behaves as if it had declared nothing,
+  // and the first symptom is a prompt or tool that "has no handler".
+  if (name && !declared) {
+    warn(`[llm-meta-widget] the page card declares global "${name}", but window.${name} ` +
+         "is not defined — is the script that defines it loaded, and did it run?")
+  }
+
+  const isMap = (v) => !!v && typeof v === "object" && !Array.isArray(v)
+  const pick = (kind, legacyName) => {
+    // `declared ? … : undefined`, not `declared && …`: the second yields null
+    // when nothing is declared, and `typeof null === "object"`, so the check
+    // below then warned about "window.null.tools" on every page with no card.
+    const fromGlobal = declared ? declared[kind] : undefined
+    if (isMap(fromGlobal)) return fromGlobal
+    // An array is the mistake worth naming: it passes a typeof check, so it
+    // would be used as a map and answer every lookup with undefined.
+    if (declared && fromGlobal !== undefined && !isMap(fromGlobal)) {
+      warn(`[llm-meta-widget] window.${name}.${kind} is ${Array.isArray(fromGlobal) ? "an array" : typeof fromGlobal}; ` +
+           `it must be an object keyed by ${kind === "resources" ? "uri" : "name"}`)
+    }
+    return (legacyName && scope[legacyName]) || {}
+  }
+  return {
+    global: name,
+    tools: pick("tools", legacy.tools),
+    prompts: pick("prompts", legacy.prompts),
+    resources: pick("resources", legacy.resources)
+  }
+}
+
 // Several blocks may appear in one document, so that a page assembled from
 // components can let each component declare its own primitives. The arrays
 // concatenate by primitive type.
@@ -894,7 +950,23 @@ export const PAGE_CARD_MEDIA_TYPE = "application/mcp-static-primitives+json"
 // Picking the first would make which component wins depend on DOM order, which
 // is not something a page author controls when the components are partials.
 export function mergeStaticPrimitivesCards(cards, warn = console.warn) {
-  const merged = { tools: [], prompts: [], resources: [] }
+  const merged = { remotes: [], tools: [], prompts: [], resources: [] }
+  // Each block is a full Server Card and may declare a transport. The first
+  // one wins; a second block naming a DIFFERENT global is an authoring error,
+  // because only one of them can be dispatched to.
+  for (const card of cards || []) {
+    for (const remote of (card && card.remotes) || []) {
+      const clash = merged.remotes.find((r) => r.type === remote.type && r.global !== remote.global)
+      if (clash) {
+        warn(`[llm-meta-widget] two blocks declare different ${remote.type} globals ` +
+             `("${clash.global}" and "${remote.global}"); using "${clash.global}"`)
+        continue
+      }
+      if (!merged.remotes.some((r) => r.type === remote.type && r.global === remote.global)) {
+        merged.remotes.push(remote)
+      }
+    }
+  }
   const keyOf = { tools: "name", prompts: "name", resources: "uri" }
 
   for (const kind of [ "tools", "prompts", "resources" ]) {
@@ -917,7 +989,7 @@ export function mergeStaticPrimitivesCards(cards, warn = console.warn) {
 }
 
 export function readStaticPrimitivesCard(text, warn = console.warn) {
-  const empty = { tools: [], prompts: [], resources: [] }
+  const empty = { remotes: [], tools: [], prompts: [], resources: [] }
   if (typeof text !== "string" || text.trim() === "") return empty
 
   let doc
@@ -941,6 +1013,8 @@ export function readStaticPrimitivesCard(text, warn = console.warn) {
   })
 
   return {
+    // The whole card's transport, so what it declares survives the parse.
+    remotes: Array.isArray(doc.remotes) ? doc.remotes : [],
     tools: named(ext.tools, "tool"),
     prompts: named(ext.prompts, "prompt"),
     // Resources are addressed by uri, not name — resources/read takes the uri.

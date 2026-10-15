@@ -26,7 +26,7 @@ import { runChatLoop, fetchMcpManifest, listMcpPrompts, getMcpPrompt,
          readStaticPrimitivesCard, getPagePrompt,
          planPageResources, pageResourceLinesForTurn,
          promptArgState, mergeStaticPrimitivesCards,
-         PAGE_CARD_MEDIA_TYPE } from "./orchestrator.js";
+         PAGE_CARD_MEDIA_TYPE, pageHandlers } from "./orchestrator.js";
 import { marked } from "./marked.esm.js";
 import { readConfig } from "./config.js";
 import conversationCss from "../../stylesheets/llm_meta_widget/conversation.css";
@@ -325,7 +325,16 @@ function boot(cfg) {
   		var pageCardEl = document.getElementById(PAGE_CARD_ID);
   		pageCard = readStaticPrimitivesCard(pageCardEl ? pageCardEl.textContent : null);
   	}
-  	var actionsSchemaEl = document.getElementById(ACTIONS_SCHEMA_ID);
+  	// Where the page's handlers live. The card may declare a global, which is
+	// the only form an outside consumer can discover; the three legacy globals
+	// remain as a per-type fallback so a page moving over keeps working.
+	var handlers = pageHandlers({
+		card: pageCard,
+		scope: window,
+		legacy: { tools: ACTIONS_GLOBAL, prompts: PROMPTS_GLOBAL, resources: RESOURCES_GLOBAL }
+	});
+
+	var actionsSchemaEl = document.getElementById(ACTIONS_SCHEMA_ID);
   	var localTools = pageCard.tools.length
   		? pageCard.tools
   		: (actionsSchemaEl ? JSON.parse(actionsSchemaEl.textContent) : []);
@@ -708,7 +717,7 @@ function boot(cfg) {
   	// looks up live there, not in aiState.
   	function argState() {
   		return promptArgState({ entries: pageCard.resources,
-  		                        resources: window[RESOURCES_GLOBAL] || {},
+  		                        resources: handlers.resources,
   		                        state: window[STATE_GLOBAL] || {} });
   	}
 
@@ -834,7 +843,7 @@ function boot(cfg) {
   		button.disabled = true;
   		try {
   			var result = prompt.source === "page"
-  				? await getPagePrompt({ name: prompt.name, args: args, prompts: window[PROMPTS_GLOBAL] })
+  				? await getPagePrompt({ name: prompt.name, args: args, prompts: handlers.prompts })
   				: await getMcpPrompt({ endpoint: prompt.endpoint, name: prompt.name, args: args });
   			var text = promptMessagesToText(result);
   			if (!text) { appendTurn("error", "The server returned an empty prompt."); return; }
@@ -1126,7 +1135,7 @@ function boot(cfg) {
   		// read at boot is already stale by the time anyone sends a message.
   		var page = await pageResourceLinesForTurn({
   			plans:       pageResourcePlans,
-  			resources:   window[RESOURCES_GLOBAL],
+  			resources:   handlers.resources,
   			budgetBytes: RESOURCE_BUDGET_BYTES,
   			cache:       pageResourceCache
   		});
@@ -1196,7 +1205,7 @@ function boot(cfg) {
   				localTools:    localTools,
   				remoteTools:   remoteTools,
   				hostWideTools: hostWideTools,
-  				aiActions:     window[ACTIONS_GLOBAL] || {},
+  				aiActions:     handlers.tools,
   				maxRounds:     MAX_ROUNDS,
   				provider:      LLM_PROVIDER === "ollama" ? "ollama" : "hub",
   				signal:        currentAbort.signal,

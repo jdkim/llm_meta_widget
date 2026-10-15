@@ -21,7 +21,8 @@ import { resourceHints, planResourceAttachment, trimResourceText,
          parseSseStream, dispatchLocalToolCalls, runChatLoop, callMcpTool, fetchMcpManifest,
          listMcpPrompts, getMcpPrompt, listMcpResources, readMcpResource,
          promptMessagesToText, readStaticPrimitivesCard, getPagePrompt, planPageResources, pageResourceLinesForTurn, pageResourceLine,
-         mergeStaticPrimitivesCards, PAGE_CARD_MEDIA_TYPE } from "./orchestrator.js"
+         mergeStaticPrimitivesCards, PAGE_CARD_MEDIA_TYPE,
+         declaredPageGlobal, pageHandlers } from "./orchestrator.js"
 
 // --- fixtures --------------------------------------------------------------
 
@@ -1755,18 +1756,18 @@ test("a card with no envelope is ignored, not guessed at", () => {
   // it the same document a Server Card carries.
   const card = readStaticPrimitivesCard(JSON.stringify({ tools: [ { name: "x" } ] }), quiet)
 
-  assert.deepEqual(card, { tools: [], prompts: [], resources: [] })
+  assert.deepEqual(card, { remotes: [], tools: [], prompts: [], resources: [] })
 })
 
 test("malformed JSON costs the card, not the turn", () => {
   assert.deepEqual(readStaticPrimitivesCard("{not json", quiet),
-                   { tools: [], prompts: [], resources: [] })
+                   { remotes: [], tools: [], prompts: [], resources: [] })
 })
 
 test("an absent card is simply empty", () => {
   for (const input of [ undefined, null, "", "   " ]) {
     assert.deepEqual(readStaticPrimitivesCard(input, quiet),
-                     { tools: [], prompts: [], resources: [] })
+                     { remotes: [], tools: [], prompts: [], resources: [] })
   }
 })
 
@@ -1794,7 +1795,7 @@ test("a dropped entry is reported, so a typo is visible", () => {
 test("a non-array primitive list is tolerated", () => {
   const card = readStaticPrimitivesCard(CARD({ tools: "nonsense", resources: 7 }), quiet)
 
-  assert.deepEqual(card, { tools: [], prompts: [], resources: [] })
+  assert.deepEqual(card, { remotes: [], tools: [], prompts: [], resources: [] })
 })
 
 // ---- page prompts -------------------------------------------------------
@@ -2110,9 +2111,146 @@ test("a tool and a prompt may share a name", () => {
 test("merging nothing yields empty arrays, not undefined", () => {
   const merged = mergeStaticPrimitivesCards(undefined, () => {})
 
-  assert.deepEqual(merged, { tools: [], prompts: [], resources: [] })
+  assert.deepEqual(merged, { remotes: [], tools: [], prompts: [], resources: [] })
 })
 
 test("the media type is the one the spec names", () => {
   assert.equal(PAGE_CARD_MEDIA_TYPE, "application/mcp-static-primitives+json")
+})
+
+// --- the page-local transport (SEP-0000 "page-global") -------------------
+//
+// A Server Card states its endpoint; a page card states the global under which
+// its handlers live. Without it the three legacy names are a private contract
+// between the page and this widget, and they are configurable per page, so no
+// outside consumer could rely on them.
+
+const CARD_WITH_GLOBAL = { remotes: [ { type: "page-global", global: "mcp" } ] }
+
+test("declaredPageGlobal reads the global the card declares", () => {
+  assert.equal(declaredPageGlobal(CARD_WITH_GLOBAL), "mcp")
+})
+
+test("declaredPageGlobal ignores a transport of another type", () => {
+  // The discriminating case is a transport that ALSO names a global, which is
+  // what the spec reserves `page-jsonrpc` for: a single JSON-RPC responder
+  // rather than three handler maps. Dispatching maps against it would be
+  // wrong, so the type check has to be what rejects it — not the absence of a
+  // `global` field, which is all a streamable-http entry would have proved.
+  assert.equal(declaredPageGlobal({ remotes: [ { type: "page-jsonrpc", global: "mcp" } ] }), null)
+  assert.equal(declaredPageGlobal({ remotes: [ { type: "streamable-http", url: "https://x/mcp" } ] }), null)
+})
+
+test("declaredPageGlobal ignores a blank or missing global name", () => {
+  assert.equal(declaredPageGlobal({ remotes: [ { type: "page-global", global: "  " } ] }), null)
+  assert.equal(declaredPageGlobal({ remotes: [ { type: "page-global" } ] }), null)
+  assert.equal(declaredPageGlobal({}), null)
+  assert.equal(declaredPageGlobal(), null)
+})
+
+test("the declared global supplies all three handler maps", () => {
+  const scope = { mcp: { tools: { t: 1 }, prompts: { p: 2 }, resources: { "page:r": 3 } } }
+  const h = pageHandlers({ card: CARD_WITH_GLOBAL, scope,
+                           legacy: { tools: "aiActions", prompts: "aiPrompts", resources: "aiResources" } })
+
+  assert.deepEqual([ h.tools, h.prompts, h.resources ],
+                   [ { t: 1 }, { p: 2 }, { "page:r": 3 } ])
+  assert.equal(h.global, "mcp")
+})
+
+test("the declared global wins over the legacy globals", () => {
+  const scope = { mcp: { tools: { fromGlobal: 1 } }, aiActions: { fromLegacy: 1 } }
+  const h = pageHandlers({ card: CARD_WITH_GLOBAL, scope, legacy: { tools: "aiActions" } })
+
+  assert.deepEqual(h.tools, { fromGlobal: 1 })
+})
+
+test("each map falls back on its own, so a part-moved page keeps working", () => {
+  // tools moved into window.mcp; prompts and resources have not.
+  const scope = { mcp: { tools: { moved: 1 } },
+                  aiPrompts: { stayed: 2 }, aiResources: { "page:x": 3 } }
+  const h = pageHandlers({ card: CARD_WITH_GLOBAL, scope,
+                           legacy: { tools: "aiActions", prompts: "aiPrompts", resources: "aiResources" } })
+
+  assert.deepEqual(h.tools, { moved: 1 })
+  assert.deepEqual(h.prompts, { stayed: 2 })
+  assert.deepEqual(h.resources, { "page:x": 3 })
+})
+
+test("a page that declares no transport uses the legacy globals", () => {
+  const scope = { aiActions: { a: 1 }, aiPrompts: { b: 2 }, aiResources: { c: 3 } }
+  const h = pageHandlers({ card: { remotes: [] }, scope,
+                           legacy: { tools: "aiActions", prompts: "aiPrompts", resources: "aiResources" } })
+
+  assert.deepEqual([ h.tools, h.prompts, h.resources ], [ { a: 1 }, { b: 2 }, { c: 3 } ])
+  assert.equal(h.global, null)
+})
+
+test("a declared global that does not exist falls back rather than throwing", () => {
+  const h = pageHandlers({ card: CARD_WITH_GLOBAL, scope: { aiActions: { a: 1 } },
+                           legacy: { tools: "aiActions" } })
+
+  assert.deepEqual(h.tools, { a: 1 })
+})
+
+test("pageHandlers called with nothing yields empty maps", () => {
+  const h = pageHandlers()
+
+  assert.deepEqual([ h.tools, h.prompts, h.resources ], [ {}, {}, {} ])
+})
+
+test("a card's declared transport survives the parse", () => {
+  const card = readStaticPrimitivesCard(JSON.stringify({
+    name: "org.example/page",
+    remotes: [ { type: "page-global", global: "mcp" } ],
+    _meta: { "io.modelcontextprotocol/static-primitives": { tools: [ { name: "t" } ] } }
+  }), () => {})
+
+  assert.equal(declaredPageGlobal(card), "mcp")
+})
+
+test("two blocks declaring different globals keep the first and report it", () => {
+  const said = []
+  const merged = mergeStaticPrimitivesCards([
+    { remotes: [ { type: "page-global", global: "first" } ] },
+    { remotes: [ { type: "page-global", global: "second" } ] }
+  ], (m) => said.push(m))
+
+  assert.equal(declaredPageGlobal(merged), "first")
+  assert.equal(said.length, 1)
+  assert.match(said[0], /second/)
+})
+
+test("a declared map given as an array is rejected and reported", () => {
+  // An array passes a typeof check, so without this it would be used as a map
+  // and answer every lookup with undefined — the page's tools silently gone.
+  const said = []
+  const h = pageHandlers({
+    card: CARD_WITH_GLOBAL,
+    scope: { mcp: { tools: [] }, aiActions: { legacy: 1 } },
+    legacy: { tools: "aiActions" },
+    warn: (m) => said.push(m)
+  })
+
+  assert.deepEqual(h.tools, { legacy: 1 })
+  assert.match(said.join(" "), /array/)
+})
+
+test("a declared global the page never defines is reported", () => {
+  // Nearly always load order, or a script that threw before defining it — the
+  // failure we hit for real on 2026-10-15 was exactly that shape.
+  const said = []
+  pageHandlers({ card: CARD_WITH_GLOBAL, scope: {}, legacy: { tools: "aiActions" },
+                 warn: (m) => said.push(m) })
+
+  assert.equal(said.length, 1)
+  assert.match(said[0], /window\.mcp is not defined/)
+})
+
+test("a page that declares no transport is not warned about", () => {
+  const said = []
+  pageHandlers({ card: { remotes: [] }, scope: { aiActions: {} },
+                 legacy: { tools: "aiActions" }, warn: (m) => said.push(m) })
+
+  assert.deepEqual(said, [])
 })
