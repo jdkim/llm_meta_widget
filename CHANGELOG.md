@@ -3,6 +3,85 @@
 This file starts at 0.8.0, the first release with a breaking change worth
 calling out. Earlier releases are in the git history (`git log --oneline v0.7.6`).
 
+## 0.10.0
+
+### Changed: a page card is found by its media type
+
+A card inside a page is now located by the `type` attribute of its `<script>`
+element, not by an `id`:
+
+```html
+<script type="application/mcp-static-primitives+json"> … </script>
+```
+
+A client matches `script[type="application/mcp-static-primitives+json"]`, so the
+element needs no `id`. This follows SEP-0000's "HTML-delivery mode". The reason
+for the change: an `id` that each page chooses cannot be found by a client that
+was not told the id, so an `id` cannot serve as a locator.
+
+**Existing pages keep working.** When no block carries the media type, the widget
+reads `page_card_id:` (still `"ai-page"` by default) exactly as before. That
+option is now only an escape hatch for a host that cannot set the type. Pages
+using it should move to the media type, because the fallback may be removed in a
+later release.
+
+### Added: a document may hold several cards
+
+A page built from components can give each component its own card block. The
+widget reads every block and joins the arrays by primitive type.
+
+Declaring the same tool or prompt `name`, or the same resource `uri`, in two
+blocks is an error: every copy is dropped and a message naming it is written to
+the console. The first block does not win, because which block comes first
+depends on the order the page's parts are rendered in, and the page author did
+not choose that order.
+
+A block whose JSON cannot be read costs only that block. The other blocks still
+load.
+
+## 0.9.1
+
+### Fixed: prompt arguments were empty on a page that declares resources
+
+A prompt's arguments are looked up by plain name (`text`), while page resources
+are addressed by URI (`page:text`). A page that kept its state in resources and
+had no `window.aiState` therefore had every prompt argument arrive empty, and
+the person was asked to type in something the page could already see.
+
+Page resources now fill prompt arguments of the matching name. An explicit
+`window.aiState` entry still wins, so a page running both channels keeps the
+behaviour it declared.
+
+## 0.9.0
+
+### Added: the page card
+
+A page can declare its tools, prompts and resources in one block of JSON, using
+the same envelope an MCP server puts in its Server Card. Three globals hold the
+handlers, each keyed by the identifier its own MCP operation takes:
+
+| declared in the card | implemented in | keyed by |
+|---|---|---|
+| `tools` | `window.aiActions` | tool `name` |
+| `prompts` | `window.aiPrompts` | prompt `name` |
+| `resources` | `window.aiResources` | resource `uri` |
+
+See "The page card" in the README. Nothing is required: a page that declares no
+card behaves as before, and a page that declares no `tools` still uses its
+`ai-actions` block.
+
+Page resources are addressed `page:<name>`. That scheme is experimental and
+unregistered.
+
+## 0.8.6
+
+### Changed: a resource's size is declared in the base `size` field
+
+`size` on the resource entry replaces `_meta…sizeBytes`, following the change to
+the base MCP `Resource` interface. `sizeBytes` is still read if `size` is absent,
+and is still reported for now; both will be removed in a later release. Servers
+should emit `size`.
+
 ## 0.8.0
 
 ### Breaking: state readers must declare a description

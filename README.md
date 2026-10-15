@@ -402,7 +402,7 @@ translate directly.
 | `api_key_uuid:` | `"ollama-local"` | Hub API-key uuid to invoke |
 | `element_path:` | `"/llm_meta_widget_assets/llm-meta-widget.js"` | The bundled element the page loads. Served by the gem's engine; override to load it from elsewhere |
 | `actions_schema_id:` | `"ai-actions"` | DOM id of the Class-3 schema block |
-| `page_card_id:` | `"ai-page"` | DOM id of the page card (see "The page card"). Its tools replace the `actions_schema_id` block |
+| `page_card_id:` | `"ai-page"` | **Fallback only.** A card is normally found by its media type (see "The page card"); this id is read when the page has no block with that type. Its tools replace the `actions_schema_id` block |
 | `prompts_global:` | `"aiPrompts"` | Global object holding page prompt handlers, keyed by prompt name |
 | `resources_global:` | `"aiResources"` | Global object holding page resource readers, keyed by resource URI |
 | `state_global:` | `"aiState"` | Global window object holding Class-3 state readers, each `{ description, read }` (see the breaking change in 0.8.0) |
