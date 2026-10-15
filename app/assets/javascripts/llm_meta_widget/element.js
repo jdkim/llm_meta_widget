@@ -302,6 +302,17 @@ function boot(cfg) {
   			model: MODEL
   		});
   	}
+
+  	// Saving on every streamed delta would write to sessionStorage hundreds of
+  	// times for one answer, so the stream saves at most this often. The moments
+  	// that MUST save at once — the turn starting, a tool call about to run, the
+  	// turn ending — call persistConversation directly.
+  	var lastPersist = 0;
+  	function persistSoon() {
+  		if (Date.now() - lastPersist < 400) return;
+  		lastPersist = Date.now();
+  		persistConversation();
+  	}
   	// The page card is the same static-primitives envelope a server puts in
   	// its Server Card, delivered in the document. Its `tools` REPLACE the
   	// older #ai-actions schema tag rather than merging with it: two sources
@@ -1196,6 +1207,14 @@ function boot(cfg) {
   				.concat(conversation.map(function(t) { return { role: t.role, content: t.content }; }))
   				.concat([{ role: "user", content: userText }]);
 
+  			// Recorded before the loop runs, and saved, so a page action that
+  			// navigates cannot take the turn with it. `messages` above was already
+  			// built from the previous turns, so this does not double-send anything.
+  			conversation.push({ role: "user", content: userText });
+  			var liveTurn = { role: "assistant", content: "", tools: [] };
+  			conversation.push(liveTurn);
+  			persistConversation();
+
   			var result = await runChatLoop({
   				baseUrl:       LLM_BASE,
   				toolHubUrl:    TOOL_HUB_BASE,
@@ -1209,8 +1228,19 @@ function boot(cfg) {
   				maxRounds:     MAX_ROUNDS,
   				provider:      LLM_PROVIDER === "ollama" ? "ollama" : "hub",
   				signal:        currentAbort.signal,
-  				onToolCall: function(toolCall) { announceToolCall(toolCall); },
-  				onToolDispatched: function(outcome) { resolveToolCall(outcome); },
+  				onToolCall: function(toolCall) {
+  					announceToolCall(toolCall);
+  					// At once, not throttled: this call may be the one that navigates, and
+  					// after it nothing of this turn would be saved.
+  					persistConversation();
+  				},
+  				onToolDispatched: function(outcome) {
+  					resolveToolCall(outcome);
+  					liveTurn.tools = liveTurn.tools.concat([ outcome.error
+  						? { name: outcome.toolCall.name, error: true }
+  						: { name: outcome.toolCall.name } ]);
+  					persistConversation();
+  				},
   				onPhase: function(name) {
   					// 'thinking' covers the long silence before the first
   					// token; 'responding' means text is on its way.
@@ -1241,18 +1271,19 @@ function boot(cfg) {
   					collapseThinkingBlock();
   					assistantMarkdown += delta;
   					renderMarkdownInto(assistantBody, assistantMarkdown);
+  					liveTurn.content = assistantMarkdown;
+  					persistSoon();
   					historyEl.scrollTop = historyEl.scrollHeight;
   				}
   			});
-  			conversation.push({ role: "user", content: userText });
-  			conversation.push({
-  				role:    "assistant",
-  				content: result.content,
-  				// Kept so a restored transcript still shows what ran — losing
-  				// that record is what made a navigating action unbearable.
-  				tools:   result.dispatched.map(function(d) {
-  					return d.error ? { name: d.toolCall.name, error: true } : { name: d.toolCall.name };
-  				})
+  			// The turn was recorded here until 0.11.1, after the loop returned — which
+  			// a page action that navigates never lets happen. Submitting a form
+  			// mid-turn therefore lost the whole turn: the question, whatever the
+  			// assistant had already said, and the record of what ran. It is recorded as
+  			// it happens now, and only finalised here.
+  			liveTurn.content = result.content;
+  			liveTurn.tools = result.dispatched.map(function(d) {
+  				return d.error ? { name: d.toolCall.name, error: true } : { name: d.toolCall.name };
   			});
   			persistConversation();
 

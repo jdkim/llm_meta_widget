@@ -3963,6 +3963,12 @@ function boot(cfg) {
       model: MODEL
     });
   }
+  var lastPersist = 0;
+  function persistSoon() {
+    if (Date.now() - lastPersist < 400) return;
+    lastPersist = Date.now();
+    persistConversation();
+  }
   var typedCards = document.querySelectorAll('script[type="' + PAGE_CARD_MEDIA_TYPE + '"]');
   var pageCard;
   if (typedCards.length) {
@@ -4625,6 +4631,10 @@ function boot(cfg) {
       var messages = [{ role: "system", content: currentSystemPrompt(resourceLines) }].concat(conversation.map(function(t) {
         return { role: t.role, content: t.content };
       })).concat([{ role: "user", content: userText }]);
+      conversation.push({ role: "user", content: userText });
+      var liveTurn = { role: "assistant", content: "", tools: [] };
+      conversation.push(liveTurn);
+      persistConversation();
       var result = await runChatLoop({
         baseUrl: LLM_BASE,
         toolHubUrl: TOOL_HUB_BASE,
@@ -4640,9 +4650,12 @@ function boot(cfg) {
         signal: currentAbort.signal,
         onToolCall: function(toolCall) {
           announceToolCall(toolCall);
+          persistConversation();
         },
         onToolDispatched: function(outcome) {
           resolveToolCall(outcome);
+          liveTurn.tools = liveTurn.tools.concat([outcome.error ? { name: outcome.toolCall.name, error: true } : { name: outcome.toolCall.name }]);
+          persistConversation();
         },
         onPhase: function(name) {
           if (name === "responding") markDone(assistantBody.roleLabel);
@@ -4663,18 +4676,14 @@ function boot(cfg) {
           collapseThinkingBlock();
           assistantMarkdown += delta;
           renderMarkdownInto(assistantBody, assistantMarkdown);
+          liveTurn.content = assistantMarkdown;
+          persistSoon();
           historyEl.scrollTop = historyEl.scrollHeight;
         }
       });
-      conversation.push({ role: "user", content: userText });
-      conversation.push({
-        role: "assistant",
-        content: result.content,
-        // Kept so a restored transcript still shows what ran — losing
-        // that record is what made a navigating action unbearable.
-        tools: result.dispatched.map(function(d) {
-          return d.error ? { name: d.toolCall.name, error: true } : { name: d.toolCall.name };
-        })
+      liveTurn.content = result.content;
+      liveTurn.tools = result.dispatched.map(function(d) {
+        return d.error ? { name: d.toolCall.name, error: true } : { name: d.toolCall.name };
       });
       persistConversation();
       result.dispatched.forEach(function(d) {

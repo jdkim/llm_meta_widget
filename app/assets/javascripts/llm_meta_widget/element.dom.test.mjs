@@ -20,6 +20,7 @@ const HUB = "https://hub.example"
 
 // What the stub hub answers with. Tests mutate this before mounting.
 let hubServers = []
+let streamScript = null
 let sentBodies = []
 // Set to override the /api/llms answer for one test.
 let hubLlms = null
@@ -37,8 +38,13 @@ function installGlobals() {
     const u = String(url)
     if (u.includes("single_llm_calls")) {
       sentBodies.push(JSON.parse(init.body || "{}"))
-      return new Response('event: done\ndata: {"content":"ok","finish_reason":"stop"}\n\n',
-                          { status: 200, headers: { "Content-Type": "text/event-stream" } })
+      // A test can script the stream, one entry per round, to exercise a tool
+      // call. Until 0.11.1 nothing here could emit one, so no DOM test had ever
+      // driven a dispatch.
+      const body = (streamScript && streamScript.length)
+        ? streamScript.shift()
+        : 'event: done\ndata: {"content":"ok","finish_reason":"stop"}\n\n'
+      return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } })
     }
     const json = (body) => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) })
     if (u.includes("/api/llms"))        return json(hubLlms || { llms: [ { models: [ { value: "m1" }, { value: "m2" } ] } ] })
@@ -72,7 +78,13 @@ async function mount(attrs = {}, settle = 60) {
 }
 
 before(() => { assert.ok(customElements.get("llm-meta-widget"), "the bundle should register the element") })
-beforeEach(() => { hubServers = []; sentBodies = []; hubLlms = null })
+// Every test mounts at the same path, and the transcript is keyed by path, so
+// without this a test restores the previous test's conversation — which made an
+// assertion about "the saved question" read a question from two tests ago.
+beforeEach(() => {
+  hubServers = []; sentBodies = []; hubLlms = null; streamScript = null
+  try { window.sessionStorage.clear() } catch { /* storage may be unavailable */ }
+})
 
 test("the rendered panel shows no template syntax", async () => {
   const panel = await mount()
@@ -832,5 +844,72 @@ test("the legacy globals still work when the card declares no transport", async 
   await mountWithPage({ typedCards: [ { tools: [ { name: "legacy_tool", description: "d", inputSchema: {} } ] } ] })
 
   assert.deepEqual(await localToolsAfterATurn(), [ "legacy_tool" ])
+  delete window.aiActions
+})
+
+// ---- a turn survives a page action that navigates ----------------------
+//
+// The transcript was written once, after the chat loop returned — which a page
+// action that navigates never lets happen. PubDictionaries' submit_annotation
+// submits a form, so the turn was lost: the question, whatever the assistant
+// had already said, and the record of what ran. Reported from test2 on
+// 2026-10-15 as "it called submit_annotation, without any response to the chat".
+//
+// A real navigation cannot be driven in jsdom, so these assert the property
+// that makes one survivable: by the time a tool handler runs, the turn is
+// already in storage.
+
+test("the question is in storage before a tool handler runs", async () => {
+  let seen = null
+  window.aiActions = {
+    navigating_tool: () => {
+      seen = JSON.parse(window.sessionStorage.getItem("llm_meta_widget:" + location.pathname))
+      return "ok"
+    }
+  }
+  streamScript = [
+    'event: text_delta\ndata: {"delta":"Choosing MONDO. Submitting now."}\n\n' +
+    'event: tool_call\ndata: {"tool_call":{"id":"c1","name":"navigating_tool","arguments":{}}}\n\n' +
+    'event: done\ndata: {"content":"Choosing MONDO. Submitting now.","finish_reason":"tool_calls"}\n\n',
+    'event: done\ndata: {"content":"done","finish_reason":"stop"}\n\n'
+  ]
+  await mountWithPage({ typedCards: [ { tools: [ { name: "navigating_tool", description: "d", inputSchema: {} } ] } ] })
+  const panel = document.getElementById("llm-meta-widget-chat")
+  panel.querySelector("textarea").value = "annotate this for me"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(200)
+
+  assert.ok(seen, "nothing was in storage when the handler ran")
+  const roles = seen.turns.map((t) => t.role)
+  assert.ok(roles.includes("user"), "the question was not saved before the tool ran")
+  assert.equal(seen.turns.find((t) => t.role === "user").content, "annotate this for me")
+  delete window.aiActions
+})
+
+test("what the assistant said before the tool call is in storage too", async () => {
+  let seen = null
+  window.aiActions = {
+    navigating_tool: () => {
+      seen = JSON.parse(window.sessionStorage.getItem("llm_meta_widget:" + location.pathname))
+      return "ok"
+    }
+  }
+  // The stub streams text and then a tool call, which is the shape that loses
+  // its answer: the text is on screen but was never saved.
+  streamScript = [
+    'event: text_delta\ndata: {"delta":"Choosing MONDO. Submitting now."}\n\n' +
+    'event: tool_call\ndata: {"tool_call":{"id":"c1","name":"navigating_tool","arguments":{}}}\n\n' +
+    'event: done\ndata: {"content":"Choosing MONDO. Submitting now.","finish_reason":"tool_calls"}\n\n',
+    'event: done\ndata: {"content":"done","finish_reason":"stop"}\n\n'
+  ]
+  sentBodies.length = 0
+  await mountWithPage({ typedCards: [ { tools: [ { name: "navigating_tool", description: "d", inputSchema: {} } ] } ] })
+  const panel = document.getElementById("llm-meta-widget-chat")
+  panel.querySelector("textarea").value = "say something then act"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(200)
+
+  const assistant = seen && seen.turns.find((t) => t.role === "assistant")
+  assert.ok(assistant, "no assistant turn was saved before the tool ran")
   delete window.aiActions
 })

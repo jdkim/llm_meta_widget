@@ -3,6 +3,25 @@
 This file starts at 0.8.0, the first release with a breaking change worth
 calling out. Earlier releases are in the git history (`git log --oneline v0.7.6`).
 
+## 0.11.1
+
+### Fixed: a page action that navigates no longer loses the turn
+
+The transcript was saved once, after the chat loop finished. A page action that
+navigates — submitting a form, following a link — unloads the page while the
+loop is still running, so that turn was never saved: not the question, not
+whatever the assistant had already said, and not the record of which tools ran.
+After the navigation the panel came back with the previous turns and nothing of
+the one that had just happened.
+
+The turn is now saved as it happens. The question is saved before the model is
+called, streamed text is saved as it arrives, and a save always happens
+immediately before a tool call runs, because that call may be the one that
+navigates.
+
+This matters to any page that declares an action which navigates. Nothing to
+change in your page.
+
 ## 0.11.0
 
 ### Added: a page can say where its handlers live
