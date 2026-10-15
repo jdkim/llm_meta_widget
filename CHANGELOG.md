@@ -3,6 +3,13 @@
 This file starts at 0.8.0, the first release with a breaking change worth
 calling out. Earlier releases are in the git history (`git log --oneline v0.7.6`).
 
+## 0.10.1
+
+Documentation only. The 0.10.0 release notes and the README section on the page
+card were written after that release was published, so the copies on RubyGems
+and npm still described 0.9.1. There is no code change: a page running 0.10.0
+behaves exactly as one running 0.10.1.
+
 ## 0.10.0
 
 ### Changed: a page card is found by its media type
