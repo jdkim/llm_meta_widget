@@ -169,6 +169,12 @@ function boot(cfg) {
   	// and we stop following; come back to it and we resume.
   	var SCROLL_PIN_SLACK = 40;   // px from the end still counts as "at the end"
 
+  	// Rounded to the nearest thousand and grouped, so the numbers read as a
+  	// scale rather than as a precise count the estimate cannot support.
+  	function thousands(n) {
+  		return (Math.round(n / 1000) * 1000).toLocaleString("en-US");
+  	}
+
   	function atBottom() {
   		return historyEl.scrollHeight - historyEl.scrollTop - historyEl.clientHeight <= SCROLL_PIN_SLACK;
   	}
@@ -1127,15 +1133,45 @@ function boot(cfg) {
   		return body;
   	}
 
+  	// Collapsing a thinking block is what broke scrolling in Chrome.
+  	//
+  	// A thinking block is a <details> holding its own scroller (max-height +
+  	// overflow-y on .message-thinking-content). Closing it with `open = false`
+  	// at a moment when that block is the only reason .lmw-messages overflows
+  	// makes the list briefly non-scrollable. When later content makes it
+  	// scrollable again, Chrome keeps the WHEEL range from that moment — tens of
+  	// pixels — while scrollTop and scrollHeight stay correct. So the reader can
+  	// scroll a few pixels and no further, by any input method, while
+  	// `scrollTop = 600` set from script still works. Chrome 154 reproduces it
+  	// with no widget code at all; Firefox 158 never does (reported 2026-10-17).
+  	//
+  	// Taking the scroller off the inner box BEFORE the close avoids the state.
+  	// Two frames, because one is not enough for Chrome to pick up the new
+  	// overflow before the close lands.
+  	//
+  	// The box stays a non-scroller afterwards, so a reader who reopens a
+  	// finished block sees it at full height instead of a 10em window. Putting
+  	// the scroller back on reopen would let a manual close trigger the bug
+  	// again, which is a worse trade.
   	function collapseThinkingBlock() {
-  		if (currentThinkingBlock) {
-  			currentThinkingBlock.classList.remove("thinking-active");
-  			currentThinkingBlock.open = false;
-  			var summary = currentThinkingBlock.querySelector("summary");
-  			if (summary) summary.textContent = "🤔 thinking (finished)";
-  		}
+  		var block = currentThinkingBlock;
   		currentThinkingBlock = null;
   		currentThinkingBody  = null;
+  		if (!block) return;
+
+  		block.classList.remove("thinking-active");
+  		var summary = block.querySelector("summary");
+  		if (summary) summary.textContent = "🤔 thinking (finished)";
+
+  		var body = block.querySelector(".message-thinking-content");
+  		if (body) {
+  			body.style.overflow  = "visible";
+  			body.style.maxHeight = "none";
+  		}
+  		if (typeof requestAnimationFrame !== "function") { block.open = false; return; }
+  		requestAnimationFrame(function() {
+  			requestAnimationFrame(function() { block.open = false; });
+  		});
   	}
 
   	// Every declaration channel the widget hands the model carries a
@@ -1317,12 +1353,31 @@ function boot(cfg) {
   				contextWindow: modelWindow,
   				provider:      LLM_PROVIDER === "ollama" ? "ollama" : "hub",
   				signal:        currentAbort.signal,
-  				onContextEvicted: function(dropped) {
-  					// Said out loud: a context that quietly thins out makes a later answer
-  					// look inexplicably worse, with nothing on screen to explain it.
-  					var last = dropped[dropped.length - 1];
-  					var name = (last && last.name) ? last.name : "tool";
-  					appendTurn("system", "Dropped an earlier " + name + " result to make room in the model's context. Ask again if you need it.");
+  				onContextTruncated: function(list) {
+  					// A shortened result is not a failure, but the reader has to know the
+  					// model answered from part of it — and the numbers say whether a narrower
+  					// question would help.
+  					var cut = list[list.length - 1] || {};
+  					appendTurn("system", "Shortened an oversized " + (cut.name || "tool") + " result to fit the context: " +
+  						thousands(cut.fromTokens || 0) + " tokens, where one result may use at most " +
+  						thousands(cut.toTokens || 0) + ". Ask again with a narrower question for the complete result.");
+  				},
+  				onContextEvicted: function(info) {
+  					// Said out loud, with the numbers. A context that quietly thins out makes
+  					// a later answer look inexplicably worse, and "an old result was dropped"
+  					// alone does not tell a reader whether to retry, shorten the question, or
+  					// pick a model with more room.
+  					var dropped = info.dropped || [];
+  					var names = dropped.map(function(d) { return d.name || "a tool"; });
+  					var what = names.length === 1
+  						? "the earliest tool result (" + names[0] + ")"
+  						: "the " + names.length + " earliest tool results (" + names.join(", ") + ")";
+  					var sizes = (info.needed && info.window)
+  						? " About " + thousands(info.needed) + " tokens were needed and " +
+  						  thousands(info.window) + " fit in " + MODEL + "'s context."
+  						: "";
+  					appendTurn("system", "Dropped " + what + " to make room." + sizes +
+  						" Ask again, or narrow the question, for an answer based on complete tool results.");
   				},
   				onToolCall: function(toolCall) {
   					announceToolCall(toolCall);

@@ -25,7 +25,7 @@ import { resourceHints, planResourceAttachment, trimResourceText,
          declaredPageGlobal, pageHandlers,
          modelWindowFrom, estimateTokens, evictOldToolResults,
          resourceBudgetBytes, estimateToolsTokens,
-         estimateTextTokens } from "./orchestrator.js"
+         estimateTextTokens, truncateOversizedToolResults } from "./orchestrator.js"
 
 // --- fixtures --------------------------------------------------------------
 
@@ -2513,20 +2513,20 @@ test("runChatLoop with no window given evicts nothing, however long the turn", a
   assert.equal(sent[0].content.length, 4_000_000, "nothing may be dropped without a window")
 })
 
-test("runChatLoop holds tokens back for the answer by default", async () => {
-  // ~4000 tokens of history against a 4600-token window: it fits the window,
-  // and does not fit once room is kept for the answer. With the default
-  // reserve at zero this turn is sent whole and the model has nothing to
-  // generate into.
-  const history = { role: "tool", tool_call_id: "c0", name: "earlier", content: "z".repeat(16_000) }
-  const { calls } = await withFetch(
-    [ { matches: (u) => u.includes("/single_llm_calls"), respond: () => sseResponse(sseDoneOnly("ok")) } ],
-    () => runChatLoop({ ...BASE_OPTS, contextWindow: 4_600,
-                        messages: [ history, { role: "user", content: "hi" } ] })
-  )
+test("runChatLoop holds tokens back for the answer by default", () => {
+  // Several results, none of them over the per-result cap, so this is an
+  // AGGREGATE overflow — the case eviction is for, now that one oversized
+  // result is capped instead. ~3,400 tokens of history against a 4,600-token
+  // window: it fits the window, and does not fit once room is kept for the
+  // answer.
+  const some = (id) => ({ role: "tool", tool_call_id: id, name: "earlier", content: "z".repeat(4_000) })
+  const messages = [ some("c1"), some("c2"), some("c3"), { role: "user", content: "hi" } ]
 
-  const sent = calls[0].body.messages.filter((m) => m.role === "tool")
-  assert.match(sent[0].content, /dropped to make room/)
+  const fits = evictOldToolResults({ messages, window: 4_600, reserve: 0 })
+  assert.deepEqual(fits.dropped, [], "no reserve, nothing needs to go")
+
+  const reserved = evictOldToolResults({ messages, window: 4_600, reserve: 2_048 })
+  assert.ok(reserved.dropped.length > 0, "the reserve is what makes this evict")
 })
 
 test("estimateToolsTokens prices names, descriptions and schemas", () => {
@@ -2584,4 +2584,60 @@ test("runChatLoop counts the declared tools against the window", async () => {
   const sent = calls[0].body.messages.filter((m) => m.role === "tool")
   assert.match(sent[0].content, /dropped to make room/,
     "5,000 tokens of messages plus 5,250 of tool schemas does not fit 9,000")
+})
+
+// --- capping one oversized tool result ----------------------------------
+
+test("a result over the share is cut to about the cap, keeping its identity", () => {
+  // A provider rejects a tool_call with no matching result, so the message
+  // must survive with its id — only its content shrinks.
+  const messages = [ { role: "tool", tool_call_id: "c1", name: "big", content: "z".repeat(400_000) },
+                     { role: "user", content: "go" } ]
+
+  const { messages: out, truncated } = truncateOversizedToolResults({ messages, window: 100_000 })
+
+  assert.equal(out[0].role, "tool")
+  assert.equal(out[0].tool_call_id, "c1")
+  assert.match(out[0].content, /truncated: \d+ of 400000 characters shown/)
+  assert.match(out[0].content, /at most 40% of the context window/)
+  const after = estimateTextTokens(out[0].content)
+  assert.ok(after <= 100_000 * 0.4 * 1.1, `should land near the cap, got ${after}`)
+  assert.deepEqual(truncated.map((t) => t.name), [ "big" ])
+})
+
+test("a result within the share is left exactly alone", () => {
+  const messages = [ { role: "tool", tool_call_id: "c1", name: "ok", content: "z".repeat(1_000) } ]
+  const { messages: out, truncated } = truncateOversizedToolResults({ messages, window: 100_000 })
+
+  assert.equal(out, messages, "the same array, so the caller can tell nothing happened")
+  assert.deepEqual(truncated, [])
+})
+
+test("nothing is cut when the window is unknown", () => {
+  const messages = [ { role: "tool", tool_call_id: "c1", name: "big", content: "z".repeat(900_000) } ]
+
+  assert.equal(truncateOversizedToolResults({ messages, window: null }).messages, messages)
+  assert.equal(truncateOversizedToolResults({ messages, window: 0 }).messages, messages)
+})
+
+test("capping one result spares the others, which eviction would have dropped", () => {
+  // The audited turn (2026-10-17): two 80-token results and one of 120,667
+  // against a 128,000 window. Eviction dropped the two small ones — 160 tokens
+  // against a ~2,600 shortfall — and left the monster. Capping frees ~69,000
+  // and keeps everything the model asked for.
+  const small = (id, name) => ({ role: "tool", tool_call_id: id, name, content: "x".repeat(220) })
+  const messages = [
+    { role: "system", content: "rules" },
+    small("c1", "find_ids"),
+    small("c2", "list_dictionaries"),
+    { role: "tool", tool_call_id: "c3", name: "togovar_search_variant", content: "z".repeat(242_795) }
+  ]
+
+  const capped = truncateOversizedToolResults({ messages, window: 128_000 })
+  const { dropped } = evictOldToolResults({ messages: capped.messages, window: 128_000, reserve: 8_048 })
+
+  assert.deepEqual(capped.truncated.map((t) => t.name), [ "togovar_search_variant" ])
+  assert.deepEqual(dropped, [], "with the monster capped, nothing needs dropping")
+  assert.equal(capped.messages[1].content.length, 220, "the small results are untouched")
+  assert.equal(capped.messages[2].content.length, 220)
 })

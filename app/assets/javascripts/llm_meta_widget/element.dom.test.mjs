@@ -983,16 +983,20 @@ async function turnWithAHugeToolResult({ window: contextWindow }) {
   return panel
 }
 
-test("a tool result too big for the model's window is given up", async () => {
-  // ~150k tokens against a 64k model. The hub would refuse this turn outright;
-  // the loop gives up the result instead, so the turn still finishes.
+test("a tool result too big for the model's window is shortened, not dropped", async () => {
+  // ~150k tokens against a 64k model. Dropping it would throw away what the
+  // model just asked for; capping it at 40% of the window keeps a usable
+  // prefix and tells the model to narrow its query.
   const panel = await turnWithAHugeToolResult({ window: 64_000 })
 
   const last = sentBodies[sentBodies.length - 1]
   const toolMessages = (last.messages || []).filter((m) => m.role === "tool")
-  assert.equal(toolMessages.length, 1, "the result must still be there as a message")
-  assert.match(toolMessages[0].content, /dropped to make room/)
-  assert.match(panel.textContent, /Dropped an earlier big_tool result/, "the visitor should be told")
+  assert.equal(toolMessages.length, 1, "the result must still be there")
+  assert.doesNotMatch(toolMessages[0].content, /dropped to make room/, "it must not be dropped")
+  assert.match(toolMessages[0].content, /truncated: \d+ of \d+ characters shown/)
+  assert.match(toolMessages[0].content, /narrower query/)
+  assert.ok(toolMessages[0].content.length < 600_000 * 0.5, "and it must actually be shorter")
+  assert.match(panel.textContent, /Shortened/, "the visitor should be told")
 })
 
 test("without a window from the hub nothing is given up", async () => {
@@ -1137,8 +1141,11 @@ test("switching model in the picker moves the window with it", async () => {
   const last = sentBodies[sentBodies.length - 1]
   const toolMessages = (last.messages || []).filter((m) => m.role === "tool")
   assert.equal(toolMessages.length, 1)
-  assert.match(toolMessages[0].content, /dropped to make room/,
-    "after switching to the 16k model the result must not be sent whole")
+  // The per-result cap is a share of the window, so it moves with the model:
+  // under the 1M model this result is affordable whole, under the 16k one it
+  // is not. If the switch left the window behind, nothing would be shortened.
+  assert.match(toolMessages[0].content, /truncated: \d+ of \d+ characters shown/,
+    "after switching to the 16k model the result must be capped")
 })
 
 // --- wide tables ---------------------------------------------------------
@@ -1400,7 +1407,7 @@ test("a system notice appearing mid-turn does not drag the reader", async () => 
   msgs.dispatchEvent(new window.Event("scroll"))
   await tick(900)
 
-  assert.match(panel.textContent, /Dropped an earlier big_tool result/, "the notice must have appeared")
+  assert.match(panel.textContent, /Shortened an oversized big_tool result/, "the notice must have appeared")
   assert.equal(msgs.scrollTop, 160, "a system notice must not pin the view")
 })
 
@@ -1432,4 +1439,115 @@ test("a reader who scrolls is not re-pinned before the scroll event arrives", as
 
   assert.match(panel.textContent, /fourth/, "the rest of the turn must have streamed in")
   assert.equal(msgs.scrollTop, 100, "the view must stay where the reader put it")
+})
+
+// --- collapsing a thinking block (the Chrome wheel-range bug) ------------
+//
+// Closing a <details> that holds its own scroller, at a moment when that block
+// is the only reason the message list overflows, leaves Chrome with a stale
+// WHEEL range: the reader can scroll a few pixels and no further, by any input
+// method, while scrollTop set from script still works. Confirmed on Chrome 154
+// with no widget code involved, and never on Firefox 158 (2026-10-17).
+//
+// The order is the fix: the inner box must stop being a scroller BEFORE the
+// close. These assert that order, not merely the end state.
+
+async function turnWithAThinkingBlock() {
+  hubLlms = { llms: [ { family: "ollama", available_models: [ { value: "m1", label: "m1" } ] } ] }
+  streamScript = [ { gap: 120, parts: [
+    'event: thinking_delta\ndata: {"delta":"weighing the first option. "}\n\n',
+    'event: thinking_delta\ndata: {"delta":"weighing the second option. "}\n\n',
+    'event: text_delta\ndata: {"delta":"Here is the answer. "}\n\n',
+    'event: done\ndata: {"content":"Here is the answer. ","finish_reason":"stop"}\n\n'
+  ] } ]
+  const panel = await mount()
+  panel.querySelector("textarea").value = "think then answer"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(200)                       // the thinking block exists by now
+  const details = panel.querySelector("details")
+  assert.ok(details, "a thinking block should have been created")
+
+  // Record what the inner box looked like at the instant the close happened.
+  const seen = {}
+  let open = true
+  // Count frames, so the deferral is observable at all: jsdom has no layout, so
+  // the only thing a test here can see about "two frames later" is the count.
+  let frames = 0
+  const realRaf = globalThis.requestAnimationFrame
+  globalThis.requestAnimationFrame = (fn) => realRaf(() => { frames++; fn() })
+  Object.defineProperty(details, "open", {
+    configurable: true,
+    get: () => open,
+    set: (v) => {
+      if (v === false && !("overflowAtClose" in seen)) {
+        const body = details.querySelector(".message-thinking-content")
+        seen.overflowAtClose = body && body.style.overflow
+        seen.maxHeightAtClose = body && body.style.maxHeight
+        seen.framesBeforeClose = frames
+      }
+      open = v
+    }
+  })
+  await tick(600)                       // the text delta collapses it
+  globalThis.requestAnimationFrame = realRaf
+  return { panel, details, seen }
+}
+
+test("the inner box stops scrolling before the block is closed", async () => {
+  const { seen } = await turnWithAThinkingBlock()
+
+  assert.equal(seen.overflowAtClose, "visible",
+    "the scroller must be gone BEFORE open=false, which is the whole fix")
+  assert.equal(seen.maxHeightAtClose, "none")
+})
+
+test("the close waits two frames after the scroller is removed", async () => {
+  // Chrome needs a frame to pick up the new overflow before the close lands;
+  // one frame was not enough in testing. Closing in the same task as the style
+  // change is what reproduced the stale wheel range.
+  const { seen } = await turnWithAThinkingBlock()
+
+  assert.ok(seen.framesBeforeClose >= 2,
+    `the close should land two frames later, got ${seen.framesBeforeClose}`)
+})
+
+test("the block really does end up closed and labelled finished", async () => {
+  const { panel, details } = await turnWithAThinkingBlock()
+
+  assert.equal(details.open, false, "it must still collapse")
+  assert.match(panel.textContent, /thinking \(finished\)/)
+})
+
+test("a finished thinking block stops reading as active", async () => {
+  // .thinking-active is what marks a block as still running; left on, a
+  // finished block keeps whatever the active styling says.
+  const { details } = await turnWithAThinkingBlock()
+
+  assert.equal(details.classList.contains("thinking-active"), false)
+})
+
+test("the block still closes where requestAnimationFrame does not exist", async () => {
+  // The deferral is a workaround for one browser; the block closing is the
+  // behaviour. Somewhere without rAF it must still close, not stay open for
+  // ever.
+  const real = globalThis.requestAnimationFrame
+  delete globalThis.requestAnimationFrame
+  try {
+    hubLlms = { llms: [ { family: "ollama", available_models: [ { value: "m1", label: "m1" } ] } ] }
+    streamScript = [ { gap: 120, parts: [
+      'event: thinking_delta\ndata: {"delta":"weighing it. "}\n\n',
+      'event: text_delta\ndata: {"delta":"The answer. "}\n\n',
+      'event: done\ndata: {"content":"The answer. ","finish_reason":"stop"}\n\n'
+    ] } ]
+    const panel = await mount()
+    panel.querySelector("textarea").value = "think then answer"
+    panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+    await tick(600)
+
+    const details = panel.querySelector("details")
+    assert.ok(details, "the thinking block should still be built")
+    assert.equal(details.open, false, "and it must still end up closed")
+  } finally {
+    globalThis.requestAnimationFrame = real
+  }
 })

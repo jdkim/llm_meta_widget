@@ -3,6 +3,59 @@
 This file starts at 0.8.0, the first release with a breaking change worth
 calling out. Earlier releases are in the git history (`git log --oneline v0.7.6`).
 
+## 0.12.2
+
+### Changed: one oversized tool result is shortened, not paid for by the others
+
+A single tool result may now use at most 40% of the model's context window. A
+result above that is cut to the cap, with a note in the result itself telling
+the model how much was shown and to call the tool again with a narrower query.
+
+This replaces giving up older results as the first response to a turn that will
+not fit. Dropping the oldest results is a sound rule when results are of
+similar size, and a poor one otherwise: on a real turn (2026-10-17) it gave up
+two results of 80 tokens each — 160 tokens against a shortfall of about 2,600 —
+and left untouched the one result that was causing the problem, at 120,667
+tokens, or 94% of the window. The two results it discarded were ones the model
+had asked for.
+
+Measured over 179 real tool results: the median is 2.1% of the window, so the
+cap touches 4.5% of results. All six over-budget requests in that sample were
+caused by one oversized result, and the cap clears every one of them. On the
+turn above it frees about 69,000 tokens and nothing has to be given up at all.
+
+Giving up older results remains, for a conversation that is too long in
+aggregate rather than because of one result.
+
+The panel reports both, with the numbers: what was shortened or given up, how
+many tokens the turn needed, and how many the model holds.
+
+### Fixed: scrolling the panel after a turn with thinking blocks (Chrome)
+
+After a turn that showed thinking blocks, the panel could not be scrolled. The
+scrollbar moved a few tens of pixels and stopped, by wheel, trackpad and
+keyboard alike, while `scrollTop` set from script still worked and held. This
+was reported from two different deployments and took several wrong diagnoses
+from us before the mechanism was found.
+
+A thinking block is a `<details>` holding its own scroller. Closing one with
+`open = false`, at a moment when that block is the only reason the message list
+overflows, leaves Chrome with a stale wheel range — the list's overflow from
+that instant, often only tens of pixels. `scrollTop` and `scrollHeight` remain
+correct, which is why nothing in the page looked wrong. Chrome 154 reproduces
+it with no widget code involved at all; Firefox 158 does not, and it has been
+reported upstream.
+
+The widget now takes the scroller off the inner box before closing it, and
+closes on the second animation frame, because one frame is not enough for
+Chrome to pick up the new overflow. Measured on a real deployment: 6 of 6 turns
+healthy after the change, against 3 of 4 faulting before, with the triggering
+condition confirmed present 2 to 4 times in every passing run.
+
+One consequence: a finished thinking block that a reader reopens is shown at
+full height rather than as a 10em scrolling box. Putting the scroller back when
+it reopens would let a manual close trigger the same Chrome state again.
+
 ## 0.12.1
 
 ### Fixed: a tool result is counted as JSON, not as prose
@@ -29,8 +82,8 @@ heard that the reader had moved — and the pin put them back at the end, so the
 decision never flipped. The question is now asked synchronously, immediately
 before anything is added, which has no such window.
 
-A separate report of the panel jumping to the TOP after a turn ends is not
-explained by this and remains open.
+A separate report of the panel jumping to the TOP after a turn ends had a
+different cause, fixed in 0.12.2 below.
 
 ## 0.12.0
 

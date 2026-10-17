@@ -178,6 +178,8 @@ async function runChatLoop(opts) {
     // Called when a tool result is dropped to make room, so the panel can say
     // so rather than the context quietly thinning.
     onContextEvicted,
+    // Called when one oversized result is shortened, so the panel can say so.
+    onContextTruncated,
     // "hub" (default) talks to llm_meta_server; "ollama" talks straight to an
     // Ollama, with no server component of ours in between. The loop is the
     // same either way — only the call is swapped.
@@ -211,6 +213,7 @@ async function runChatLoop(opts) {
   const mergedLocalTools = Object.values(inlineByName);
   const rounds = [];
   const evicted = [];
+  const truncatedResults = [];
   const toolsTokens = estimateToolsTokens([].concat(
     singleOpts.localTools || [],
     remoteTools || [],
@@ -246,6 +249,15 @@ async function runChatLoop(opts) {
   for (let round = 0; round < maxRounds; round++) {
     if (signal?.aborted) throw new DOMException("aborted", "AbortError");
     onRoundStart?.(round);
+    const capped = truncateOversizedToolResults({
+      messages,
+      window: contextWindow,
+      truncated: truncatedResults
+    });
+    if (capped.messages !== messages) {
+      messages = capped.messages;
+      onContextTruncated?.(truncatedResults.slice());
+    }
     const room = evictOldToolResults({
       messages,
       window: contextWindow,
@@ -255,7 +267,7 @@ async function runChatLoop(opts) {
     });
     if (room.messages !== messages) {
       messages = room.messages;
-      onContextEvicted?.(evicted.slice());
+      onContextEvicted?.({ dropped: evicted.slice(), needed: room.needed, window: room.window });
     }
     const call = provider === "ollama" ? ollamaChatCall : singleLlmCall;
     const turnResult = await call({
@@ -622,10 +634,34 @@ function estimateToolsTokens(tools) {
   })).join("");
   return estimateTextTokens(text);
 }
+var MAX_TOOL_RESULT_SHARE = 0.4;
+function truncateOversizedToolResults({
+  messages,
+  window: window2,
+  share = MAX_TOOL_RESULT_SHARE,
+  truncated = []
+} = {}) {
+  if (!window2 || !Number.isFinite(window2)) return { messages, truncated };
+  const cap = Math.floor(window2 * share);
+  let out = null;
+  (messages || []).forEach((m, i) => {
+    if (m?.role !== "tool" || typeof m.content !== "string") return;
+    const tokens = estimateTextTokens(m.content);
+    if (tokens <= cap) return;
+    const keep = Math.max(1, Math.floor(m.content.length * cap / tokens));
+    out = out || messages.slice();
+    truncated.push({ name: m.name, fromTokens: tokens, toTokens: cap });
+    out[i] = Object.assign({}, m, {
+      content: m.content.slice(0, keep) + "\n\n[truncated: " + keep + " of " + m.content.length + " characters shown. One tool result may use at most " + Math.round(share * 100) + "% of the context window. Call the tool again with a narrower query to see more.]"
+    });
+  });
+  return { messages: out || messages, truncated };
+}
 function evictOldToolResults({ messages, window: window2, reserve = 0, dropped = [] }) {
   if (!window2 || !Number.isFinite(window2)) return { messages, dropped };
   const budget = window2 - reserve;
-  if (estimateTokens(messages) <= budget) return { messages, dropped };
+  const needed = estimateTokens(messages) + reserve;
+  if (estimateTokens(messages) <= budget) return { messages, dropped, needed, window: window2 };
   const out = messages.slice();
   for (let i = 0; i < out.length; i++) {
     if (estimateTokens(out) <= budget) break;
@@ -637,7 +673,7 @@ function evictOldToolResults({ messages, window: window2, reserve = 0, dropped =
       content: "[dropped to make room in the context window. Call the tool again if you still need it, with a narrower query.]"
     });
   }
-  return { messages: out, dropped };
+  return { messages: out, dropped, needed, window: window2 };
 }
 function modelWindowFrom(payload, modelId) {
   for (const family of payload && payload.llms || []) {
@@ -3952,6 +3988,9 @@ function boot(cfg) {
   var toggleBtn = document.getElementById("llm-meta-widget-toggle");
   var historyEl = root.querySelector(".lmw-messages");
   var SCROLL_PIN_SLACK = 40;
+  function thousands(n) {
+    return (Math.round(n / 1e3) * 1e3).toLocaleString("en-US");
+  }
   function atBottom() {
     return historyEl.scrollHeight - historyEl.scrollTop - historyEl.clientHeight <= SCROLL_PIN_SLACK;
   }
@@ -4643,14 +4682,27 @@ function boot(cfg) {
     return body;
   }
   function collapseThinkingBlock() {
-    if (currentThinkingBlock) {
-      currentThinkingBlock.classList.remove("thinking-active");
-      currentThinkingBlock.open = false;
-      var summary = currentThinkingBlock.querySelector("summary");
-      if (summary) summary.textContent = "\u{1F914} thinking (finished)";
-    }
+    var block2 = currentThinkingBlock;
     currentThinkingBlock = null;
     currentThinkingBody = null;
+    if (!block2) return;
+    block2.classList.remove("thinking-active");
+    var summary = block2.querySelector("summary");
+    if (summary) summary.textContent = "\u{1F914} thinking (finished)";
+    var body = block2.querySelector(".message-thinking-content");
+    if (body) {
+      body.style.overflow = "visible";
+      body.style.maxHeight = "none";
+    }
+    if (typeof requestAnimationFrame !== "function") {
+      block2.open = false;
+      return;
+    }
+    requestAnimationFrame(function() {
+      requestAnimationFrame(function() {
+        block2.open = false;
+      });
+    });
   }
   function stateReaders() {
     var declared = window[STATE_GLOBAL] || {};
@@ -4793,10 +4845,18 @@ function boot(cfg) {
         contextWindow: modelWindow,
         provider: LLM_PROVIDER === "ollama" ? "ollama" : "hub",
         signal: currentAbort.signal,
-        onContextEvicted: function(dropped) {
-          var last = dropped[dropped.length - 1];
-          var name = last && last.name ? last.name : "tool";
-          appendTurn("system", "Dropped an earlier " + name + " result to make room in the model's context. Ask again if you need it.");
+        onContextTruncated: function(list2) {
+          var cut = list2[list2.length - 1] || {};
+          appendTurn("system", "Shortened an oversized " + (cut.name || "tool") + " result to fit the context: " + thousands(cut.fromTokens || 0) + " tokens, where one result may use at most " + thousands(cut.toTokens || 0) + ". Ask again with a narrower question for the complete result.");
+        },
+        onContextEvicted: function(info) {
+          var dropped = info.dropped || [];
+          var names = dropped.map(function(d) {
+            return d.name || "a tool";
+          });
+          var what = names.length === 1 ? "the earliest tool result (" + names[0] + ")" : "the " + names.length + " earliest tool results (" + names.join(", ") + ")";
+          var sizes = info.needed && info.window ? " About " + thousands(info.needed) + " tokens were needed and " + thousands(info.window) + " fit in " + MODEL + "'s context." : "";
+          appendTurn("system", "Dropped " + what + " to make room." + sizes + " Ask again, or narrow the question, for an answer based on complete tool results.");
         },
         onToolCall: function(toolCall) {
           announceToolCall(toolCall);

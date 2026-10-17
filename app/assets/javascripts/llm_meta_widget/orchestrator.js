@@ -335,6 +335,8 @@ export async function runChatLoop(opts) {
     // Called when a tool result is dropped to make room, so the panel can say
     // so rather than the context quietly thinning.
     onContextEvicted,
+    // Called when one oversized result is shortened, so the panel can say so.
+    onContextTruncated,
     // "hub" (default) talks to llm_meta_server; "ollama" talks straight to an
     // Ollama, with no server component of ours in between. The loop is the
     // same either way — only the call is swapped.
@@ -377,6 +379,7 @@ export async function runChatLoop(opts) {
 
   const rounds = []
   const evicted = []
+  const truncatedResults = []
   // Fixed for the turn: the declared tool set does not change between rounds.
   const toolsTokens = estimateToolsTokens([].concat(
   	singleOpts.localTools || [], remoteTools || [], hostWideTools || []))
@@ -422,6 +425,16 @@ export async function runChatLoop(opts) {
     onRoundStart?.(round)
 
     // The loop is the same whoever answers; only the call differs.
+    // One oversized result is capped first: it frees hundreds of times more
+    // than dropping old results, and keeps what the model asked for.
+    const capped = truncateOversizedToolResults({
+    	messages, window: contextWindow, truncated: truncatedResults
+    });
+    if (capped.messages !== messages) {
+    	messages = capped.messages;
+    	onContextTruncated?.(truncatedResults.slice());
+    }
+
     // Make room before sending, rather than after being refused. Only old
     // tool results are given up; see evictOldToolResults.
     const room = evictOldToolResults({
@@ -431,7 +444,7 @@ export async function runChatLoop(opts) {
     });
     if (room.messages !== messages) {
     	messages = room.messages;
-    	onContextEvicted?.(evicted.slice());
+    	onContextEvicted?.({ dropped: evicted.slice(), needed: room.needed, window: room.window });
     }
 
     const call = provider === "ollama" ? ollamaChatCall : singleLlmCall
@@ -1003,6 +1016,55 @@ export function estimateToolsTokens(tools) {
   return estimateTextTokens(text)
 }
 
+// A single tool result may use at most this share of the window.
+//
+// Measured over 179 real tool results (2026-10-17): the median is 2.1% of the
+// window and the 90th percentile 20%, but one `togovar_search_variant` result
+// came to 94% — 120,667 tokens — and alone could not coexist with a
+// conversation. All six over-budget requests in that sample were caused by one
+// oversized result, so capping it clears every one of them while touching only
+// 4.5% of results at all.
+//
+// 40% keeps a useful prefix of even the worst result (42% of it) and still
+// leaves most of the window for the conversation, the schemas and the answer.
+export const MAX_TOOL_RESULT_SHARE = 0.4
+
+// Shortens any single tool result that exceeds that share.
+//
+// This runs BEFORE eviction, because it is strictly the better move: on the
+// audited turn it frees ~69,000 tokens from one result, where dropping the
+// oldest results freed 160 and lost two results the model had asked for. The
+// model is told what happened, in the result itself, so it can narrow its
+// query instead of assuming it received everything.
+export function truncateOversizedToolResults({ messages, window,
+                                               share = MAX_TOOL_RESULT_SHARE,
+                                               truncated = [] } = {}) {
+  if (!window || !Number.isFinite(window)) return { messages, truncated }
+
+  const cap = Math.floor(window * share)
+  let out = null
+
+  ;(messages || []).forEach((m, i) => {
+    if (m?.role !== "tool" || typeof m.content !== "string") return
+    const tokens = estimateTextTokens(m.content)
+    if (tokens <= cap) return
+
+    // Scale the cut by the measured ratio rather than a fixed chars-per-token,
+    // so a dense result is cut by what it actually costs.
+    const keep = Math.max(1, Math.floor(m.content.length * cap / tokens))
+    out = out || messages.slice()
+    truncated.push({ name: m.name, fromTokens: tokens, toTokens: cap })
+    out[i] = Object.assign({}, m, {
+      content: m.content.slice(0, keep) +
+        "\n\n[truncated: " + keep + " of " + m.content.length + " characters shown. " +
+        "One tool result may use at most " + Math.round(share * 100) +
+        "% of the context window. Call the tool again with a narrower query to see more.]"
+    })
+  })
+
+  return { messages: out || messages, truncated }
+}
+
 // Makes room for the next round by dropping the OLDEST tool results, which is
 // the one eviction a chat loop can justify: the model has already read them and
 // said what it made of them in the assistant turn that follows, so its own
@@ -1021,7 +1083,12 @@ export function evictOldToolResults({ messages, window, reserve = 0, dropped = [
   if (!window || !Number.isFinite(window)) return { messages, dropped }
 
   const budget = window - reserve
-  if (estimateTokens(messages) <= budget) return { messages, dropped }
+  // What the whole turn would have needed, against what the model holds. The
+  // panel shows both, because "an old result was dropped" on its own tells a
+  // reader nothing about whether to retry, shorten the question, or change
+  // model.
+  const needed = estimateTokens(messages) + reserve
+  if (estimateTokens(messages) <= budget) return { messages, dropped, needed, window }
 
   const out = messages.slice()
   for (let i = 0; i < out.length; i++) {
@@ -1036,7 +1103,7 @@ export function evictOldToolResults({ messages, window, reserve = 0, dropped = [
                "if you still need it, with a narrower query.]"
     })
   }
-  return { messages: out, dropped }
+  return { messages: out, dropped, needed, window }
 }
 
 export function modelWindowFrom(payload, modelId) {
