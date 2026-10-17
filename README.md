@@ -61,7 +61,7 @@ Option 3 if it does not.
 
 ```ruby
 # Gemfile
-gem "llm_meta_widget", "~> 0.11.1"
+gem "llm_meta_widget", "~> 0.12.0"
 ```
 
 ```bash
@@ -152,17 +152,17 @@ The widget is a custom element in a single self-contained ES module, so the
 whole integration is two lines of HTML:
 
 ```html
-<script type="module" src="https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.11"></script>
+<script type="module" src="https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.12"></script>
 <llm-meta-widget llm-url="https://your-meta-server.example"
                  model="gpt-oss-120b"
                  greeting="Hi — ask me anything about this page."></llm-meta-widget>
 ```
 
-**`@0.11` is a version range, and it stops at 0.11.x on purpose.** You receive
+**`@0.12` is a version range, and it stops at 0.12.x on purpose.** You receive
 bug fixes without editing your page, and a release that breaks your page cannot
 arrive on its own.
 
-Moving to 0.12 is therefore a change you make yourself. Read
+Moving to 0.13 is therefore a change you make yourself. Read
 [CHANGELOG.md](CHANGELOG.md) before you do, because this is where what your page
 must provide can change. For example, 0.10.0 changed how the widget finds a page
 card: by media type rather than by element id. A page that declared its card the

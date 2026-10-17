@@ -3,7 +3,12 @@
 This file starts at 0.8.0, the first release with a breaking change worth
 calling out. Earlier releases are in the git history (`git log --oneline v0.7.6`).
 
-## Unreleased
+## 0.12.0
+
+Nothing a page must provide changes in this release: no new attribute, no
+change to how the widget finds anything a page declares. A host moving a CDN
+pin from `@0.11` to `@0.12` has nothing to edit.
+
 
 ### Fixed: the panel can be read while a turn is still running
 
