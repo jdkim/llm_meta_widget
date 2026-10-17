@@ -3,7 +3,7 @@
 This file starts at 0.8.0, the first release with a breaking change worth
 calling out. Earlier releases are in the git history (`git log --oneline v0.7.6`).
 
-## Unreleased
+## 0.12.1
 
 ### Fixed: a tool result is counted as JSON, not as prose
 
