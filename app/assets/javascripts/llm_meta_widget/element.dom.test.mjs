@@ -24,6 +24,8 @@ let streamScript = null
 let sentBodies = []
 // Set to override the /api/llms answer for one test.
 let hubLlms = null
+// What a hub-proxied tool call answers, for a test that needs a big one.
+let hubToolResult = { ok: true }
 
 function installGlobals() {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://host.example/page" })
@@ -44,7 +46,25 @@ function installGlobals() {
       const body = (streamScript && streamScript.length)
         ? streamScript.shift()
         : 'event: done\ndata: {"content":"ok","finish_reason":"stop"}\n\n'
-      return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } })
+      const sse = { status: 200, headers: { "Content-Type": "text/event-stream" } }
+      // A script entry may be { parts, gap } instead of a string, to deliver the
+      // stream in chunks over time. A test that must act WHILE a turn is still
+      // streaming cannot use a body returned all at once: by the time it runs the
+      // turn is over, and nothing it does can be disturbed by anything.
+      if (body && typeof body === "object" && body.parts) {
+      	const encoder = new TextEncoder()
+      	const stream = new ReadableStream({
+      		async start(controller) {
+      			for (const part of body.parts) {
+      				controller.enqueue(encoder.encode(part))
+      				await new Promise((r) => setTimeout(r, body.gap ?? 40))
+      			}
+      			controller.close()
+      		}
+      	})
+      	return new Response(stream, sse)
+      }
+      return new Response(body, sse)
     }
     const json = (body) => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) })
     if (u.includes("/api/llms"))        return json(hubLlms || { llms: [ { models: [ { value: "m1" }, { value: "m2" } ] } ] })
@@ -54,6 +74,10 @@ function installGlobals() {
       return json({ tools: (s && s.tools) || [] })
     }
     if (u.includes("/api/mcp_servers")) return json({ mcp_servers: hubServers })
+    // A hub-proxied tool's real result goes back to the model, unlike a page
+    // action's (the loop reports only {ok, applied} for those) — so this is the
+    // only path a test can use to put a large result in the context.
+    if (/\/api\/mcp_tools\/[^/]+\/call/.test(u)) return json({ result: hubToolResult })
     return { ok: false, status: 404, json: async () => ({}), text: async () => "" }
   }
 }
@@ -82,7 +106,7 @@ before(() => { assert.ok(customElements.get("llm-meta-widget"), "the bundle shou
 // without this a test restores the previous test's conversation — which made an
 // assertion about "the saved question" read a question from two tests ago.
 beforeEach(() => {
-  hubServers = []; sentBodies = []; hubLlms = null; streamScript = null
+  hubServers = []; sentBodies = []; hubLlms = null; streamScript = null; hubToolResult = { ok: true }
   try { window.sessionStorage.clear() } catch { /* storage may be unavailable */ }
 })
 
@@ -912,4 +936,452 @@ test("what the assistant said before the tool call is in storage too", async () 
   const assistant = seen && seen.turns.find((t) => t.role === "assistant")
   assert.ok(assistant, "no assistant turn was saved before the tool ran")
   delete window.aiActions
+})
+
+// --- budgeting the turn against the model's real window -----------------
+//
+// These drive the whole path: /api/llms reports a window, the element hands it
+// to the loop, and the loop gives up an old tool result rather than letting the
+// provider refuse the round. A unit test of evictOldToolResults cannot see any
+// of that wiring.
+
+async function turnWithAHugeToolResult({ window: contextWindow }) {
+  hubLlms = { llms: [ { family: "ollama", available_models: [
+    { value: "m1", label: "m1", supports_tools: true, max_input_tokens: contextWindow }
+  ] } ] }
+  // A hub-registered (Class 1) tool, because its real result is what goes back
+  // to the model — a page action's does not (the loop reports only
+  // {ok, applied} for those). 600,000 characters is ~150k tokens, which is
+  // what TogoMCP's usage guide and endpoint list came to together.
+  hubServers = [ { uuid: "s1", name: "big", tools: [ { id: "t1", name: "big_tool", description: "d", input_schema: {} } ] } ]
+  hubToolResult = { text: "z".repeat(600_000) }
+  streamScript = [
+    'event: tool_call\ndata: {"tool_call":{"id":"c1","name":"big_tool","arguments":{}}}\n\n' +
+    'event: done\ndata: {"content":"","finish_reason":"tool_calls"}\n\n',
+    'event: done\ndata: {"content":"done","finish_reason":"stop"}\n\n'
+  ]
+
+  // Pre-select the tool the way a host does: a JSON block of chosen tools plus
+  // tool-hub-url. mount() clears the body, so the block goes in after.
+  const block = document.createElement("script")
+  block.type = "application/json"
+  block.id = "remote-mcp-tools"
+  block.textContent = JSON.stringify([ { id: "t1", name: "big_tool", description: "d", input_schema: {} } ])
+  document.body.innerHTML = ""
+  document.body.appendChild(block)
+  const el = document.createElement("llm-meta-widget")
+  for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "",
+                                          "tool-hub-url": HUB, "remote-tools-schema-id": "remote-mcp-tools" })) {
+    el.setAttribute(k, v)
+  }
+  document.body.appendChild(el)
+  await tick(120)
+  const panel = document.getElementById("llm-meta-widget-chat")
+  panel.querySelector("textarea").value = "ask the big tool twice"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(1200)
+  return panel
+}
+
+test("a tool result too big for the model's window is given up", async () => {
+  // ~150k tokens against a 64k model. The hub would refuse this turn outright;
+  // the loop gives up the result instead, so the turn still finishes.
+  const panel = await turnWithAHugeToolResult({ window: 64_000 })
+
+  const last = sentBodies[sentBodies.length - 1]
+  const toolMessages = (last.messages || []).filter((m) => m.role === "tool")
+  assert.equal(toolMessages.length, 1, "the result must still be there as a message")
+  assert.match(toolMessages[0].content, /dropped to make room/)
+  assert.match(panel.textContent, /Dropped an earlier big_tool result/, "the visitor should be told")
+})
+
+test("without a window from the hub nothing is given up", async () => {
+  // The same turn against a hub that reports no window: the widget must not
+  // invent one, so the result is sent whole and the provider decides.
+  const panel = await turnWithAHugeToolResult({ window: null })
+
+  const last = sentBodies[sentBodies.length - 1]
+  const toolMessages = (last.messages || []).filter((m) => m.role === "tool")
+  assert.equal(toolMessages.length, 1)
+  assert.ok(toolMessages[0].content.length > 500_000, "nothing should have been dropped")
+  assert.doesNotMatch(panel.textContent, /Dropped an earlier/)
+})
+
+// --- the budget follows the model, not the session ----------------------
+
+// A page resource whose declared size (20,000 bytes) sits between the budget
+// of a 32k model (8,192) and that of a 128k one (32,000), so whether it is
+// attached at all is decided by the derived budget. A fixed 8 KB budget — what
+// the widget used before — refuses it for both.
+let SIZE_UNDER_TEST = 20_000
+async function systemPromptForWindow(ctxWindow) {
+  hubLlms = { llms: [ { family: "ollama", available_models: [
+    { value: "m1", label: "m1", supports_tools: true, max_input_tokens: ctxWindow }
+  ] } ] }
+  globalThis.window.aiResources = { "page:big_ref": () => "BIGREFBODY" + "R".repeat(20_000) }
+  await mountWithPage({ card: { resources: [
+    { uri: "page:big_ref", name: "BigRef", description: "a large reference", size: SIZE_UNDER_TEST }
+  ] } })
+  const panel = document.getElementById("llm-meta-widget-chat")
+  const system = await systemPromptAfterATurn(panel)
+  delete globalThis.window.aiResources
+  return system
+}
+
+test("a 128k model may attach a resource a 32k model may not", async () => {
+  // A resource under the floor attaches on any model: this is the control, so
+  // a failure above means "over budget", not "page resources never attach".
+  SIZE_UNDER_TEST = 7_000
+  const underFloor = await systemPromptForWindow(32_768)
+  assert.match(underFloor, /BIGREFBODY/, "a 7,000-byte resource fits even the floor budget")
+
+  SIZE_UNDER_TEST = 20_000
+  const onSmall = await systemPromptForWindow(32_768)
+  assert.doesNotMatch(onSmall, /BIGREFBODY/, "8,192 bytes cannot afford a 20,000-byte resource")
+
+  const onBig = await systemPromptForWindow(128_000)
+  assert.match(onBig, /BIGREFBODY/, "32,000 bytes can")
+})
+
+test("a resource skipped for budget is reported once, not every turn", async () => {
+  // The plan is remembered per budget. Re-planning every turn would behave the
+  // same but write the same notice into the page's console on every message,
+  // which is somebody else's console.
+  hubLlms = { llms: [ { family: "ollama", available_models: [
+    { value: "m1", label: "m1", supports_tools: true, max_input_tokens: 32_768 }
+  ] } ] }
+  globalThis.window.aiResources = { "page:big_ref": () => "R".repeat(20_000) }
+  const notices = []
+  const realInfo = console.info
+  console.info = (...args) => { notices.push(args.join(" ")) }
+  try {
+    await mountWithPage({ card: { resources: [
+      { uri: "page:big_ref", name: "BigRef", description: "d", size: 20_000 }
+    ] } })
+    const panel = document.getElementById("llm-meta-widget-chat")
+    await systemPromptAfterATurn(panel)
+    await systemPromptAfterATurn(panel)
+  } finally {
+    console.info = realInfo
+  }
+
+  const about = notices.filter((n) => n.includes("page:big_ref"))
+  assert.equal(about.length, 1, "two turns on one model should plan once")
+  delete globalThis.window.aiResources
+})
+
+test("switching model makes a resource affordable that was not", async () => {
+  // The budget moves with the model, so the plan has to be made again: a plan
+  // kept from the first model refuses the resource for ever.
+  hubLlms = { llms: [ { family: "ollama", available_models: [
+    { value: "m1", label: "small", supports_tools: true, max_input_tokens: 32_768 },
+    { value: "m2", label: "big", supports_tools: true, max_input_tokens: 128_000 }
+  ] } ] }
+  globalThis.window.aiResources = { "page:big_ref": () => "BIGREFBODY" + "R".repeat(20_000) }
+  await mountWithPage({ card: { resources: [
+    { uri: "page:big_ref", name: "BigRef", description: "a large reference", size: 20_000 }
+  ] } })
+  const panel = document.getElementById("llm-meta-widget-chat")
+
+  const before = await systemPromptAfterATurn(panel)
+  assert.doesNotMatch(before, /BIGREFBODY/, "the 32k model cannot afford it")
+
+  const picker = panel.querySelector("select")
+  picker.value = "m2"
+  picker.dispatchEvent(new window.Event("change", { bubbles: true }))
+
+  const after = await systemPromptAfterATurn(panel)
+  assert.match(after, /BIGREFBODY/, "the 128k model can, so the plan must be made again")
+  delete globalThis.window.aiResources
+})
+
+test("switching model in the picker moves the window with it", async () => {
+  // The defect this covers: `change` set MODEL and left the window behind, so
+  // a visitor moving from a 262k model to a 32k one kept budgeting for 262k —
+  // no eviction, and a resource allowance the small model cannot hold.
+  hubLlms = { llms: [ { family: "ollama", available_models: [
+    { value: "m1", label: "big", supports_tools: true, max_input_tokens: 1_000_000 },
+    { value: "m2", label: "small", supports_tools: true, max_input_tokens: 16_000 }
+  ] } ] }
+  hubServers = [ { uuid: "s1", name: "big", tools: [ { id: "t1", name: "big_tool", description: "d", input_schema: {} } ] } ]
+  hubToolResult = { text: "z".repeat(600_000) }
+  streamScript = [
+    'event: tool_call\ndata: {"tool_call":{"id":"c1","name":"big_tool","arguments":{}}}\n\n' +
+    'event: done\ndata: {"content":"","finish_reason":"tool_calls"}\n\n',
+    'event: done\ndata: {"content":"done","finish_reason":"stop"}\n\n'
+  ]
+  const block = document.createElement("script")
+  block.type = "application/json"
+  block.id = "remote-mcp-tools"
+  block.textContent = JSON.stringify([ { id: "t1", name: "big_tool", description: "d", input_schema: {} } ])
+  document.body.innerHTML = ""
+  document.body.appendChild(block)
+  const el = document.createElement("llm-meta-widget")
+  for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "",
+                                          "tool-hub-url": HUB, "remote-tools-schema-id": "remote-mcp-tools" })) {
+    el.setAttribute(k, v)
+  }
+  document.body.appendChild(el)
+  await tick(150)
+
+  // Start on the 1M model, where ~150k tokens is affordable, then switch down.
+  const panel = document.getElementById("llm-meta-widget-chat")
+  const picker = panel.querySelector("select")
+  picker.value = "m2"
+  picker.dispatchEvent(new window.Event("change", { bubbles: true }))
+
+  panel.querySelector("textarea").value = "ask the big tool"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(1200)
+
+  const last = sentBodies[sentBodies.length - 1]
+  const toolMessages = (last.messages || []).filter((m) => m.role === "tool")
+  assert.equal(toolMessages.length, 1)
+  assert.match(toolMessages[0].content, /dropped to make room/,
+    "after switching to the 16k model the result must not be sent whole")
+})
+
+// --- wide tables ---------------------------------------------------------
+
+test("a markdown table is given its own horizontal scroller", async () => {
+  // Without the wrapper the table is itself the scrolling box, gets capped at
+  // the bubble width, squeezes its columns, and .message's word-wrap breaks
+  // every word one character per line — a six-column table of genomic
+  // notation became a column of single letters (PubDictionaries, 2026-10-16).
+  const table = [ "| rsID | Genomic notation | Effect |",
+                  "|---|---|---|",
+                  "| rs28929474 | NC_000014.9:g.94378610C>T | none |" ].join("\n")
+  hubLlms = { llms: [ { family: "ollama", available_models: [
+    { value: "m1", label: "m1", supports_tools: true } ] } ] }
+  // Streamed as a delta, the way real content arrives.
+  streamScript = [ 'event: text_delta\ndata: ' + JSON.stringify({ delta: table }) + '\n\n' +
+                   'event: done\ndata: ' + JSON.stringify({ content: table, finish_reason: "stop" }) + '\n\n' ]
+
+  const panel = await mount()
+  panel.querySelector("textarea").value = "list them"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(200)
+
+  const rendered = panel.querySelector(".message.assistant .message-content table")
+  assert.ok(rendered, "the table should render")
+  assert.equal(rendered.parentNode.className, "lmw-table-scroll",
+    "the table must sit inside the scroller, not be the scroller")
+})
+
+test("re-rendering a turn does not nest one table scroller inside another", async () => {
+  // Streaming re-renders the same bubble on every delta, so an unguarded wrap
+  // would bury the table one wrapper deeper each time.
+  const table = "| a | b |\n|---|---|\n| 1 | 2 |"
+  hubLlms = { llms: [ { family: "ollama", available_models: [ { value: "m1", label: "m1" } ] } ] }
+  streamScript = [ 'event: text_delta\ndata: ' + JSON.stringify({ delta: table }) + '\n\n' +
+                   'event: text_delta\ndata: ' + JSON.stringify({ delta: "\n\nmore" }) + '\n\n' +
+                   'event: done\ndata: ' + JSON.stringify({ content: table + "\n\nmore", finish_reason: "stop" }) + '\n\n' ]
+
+  const panel = await mount()
+  panel.querySelector("textarea").value = "go"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(250)
+
+  assert.equal(panel.querySelectorAll(".lmw-table-scroll .lmw-table-scroll").length, 0)
+  assert.equal(panel.querySelectorAll(".lmw-table-scroll").length, 1)
+})
+
+// --- reading back through a long answer ---------------------------------
+//
+// jsdom lays nothing out, so scrollHeight/clientHeight are 0 and every element
+// reads as "at the bottom". These give the scroller a geometry so the
+// distinction between following and reading back can exist at all.
+
+function giveGeometry(el, { clientHeight, scrollHeight }) {
+  Object.defineProperty(el, "clientHeight", { value: clientHeight, configurable: true })
+  Object.defineProperty(el, "scrollHeight", { value: scrollHeight, configurable: true })
+  let top = 0
+  Object.defineProperty(el, "scrollTop", {
+    get: () => top,
+    set: (v) => { top = Math.min(v, scrollHeight - clientHeight) },
+    configurable: true
+  })
+}
+
+async function streamingPanelScrolledUp() {
+  hubLlms = { llms: [ { family: "ollama", available_models: [ { value: "m1", label: "m1" } ] } ] }
+  // Chunked on purpose: the scroll has to happen while deltas are still
+  // arriving, which is the only moment the old code could yank the view.
+  streamScript = [ { gap: 70, parts: [
+    'event: text_delta\ndata: {"delta":"first part. "}\n\n',
+    'event: text_delta\ndata: {"delta":"second part. "}\n\n',
+    'event: text_delta\ndata: {"delta":"third part. "}\n\n',
+    'event: text_delta\ndata: {"delta":"fourth part. "}\n\n',
+    'event: done\ndata: {"content":"all of it","finish_reason":"stop"}\n\n'
+  ] } ]
+  const panel = await mount()
+  const msgs = panel.querySelector(".lmw-messages")
+  giveGeometry(msgs, { clientHeight: 450, scrollHeight: 1049 })
+  return { panel, msgs }
+}
+
+test("a reader who scrolled up is not dragged back by streaming output", async () => {
+  // The bug: wheel, trackpad and keyboard all appeared dead during a long
+  // turn, because every delta pinned the view to the end again.
+  const { panel, msgs } = await streamingPanelScrolledUp()
+  msgs.scrollTop = 100                                   // reading back
+  msgs.dispatchEvent(new window.Event("scroll"))         // as a real scroll would
+
+  panel.querySelector("textarea").value = "go"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(100)
+  // Sending re-follows on purpose, so scroll away again now that it streams.
+  msgs.scrollTop = 100
+  msgs.dispatchEvent(new window.Event("scroll"))
+  await tick(400)                      // the remaining chunks arrive here
+
+  assert.match(panel.textContent, /fourth part/, "the rest of the turn must have streamed in")
+  assert.equal(msgs.scrollTop, 100, "the view must stay where the reader put it")
+})
+
+test("a reader at the end still follows the output", async () => {
+  const { panel, msgs } = await streamingPanelScrolledUp()
+  msgs.scrollTop = 599                                   // 1049 - 450, the end
+  msgs.dispatchEvent(new window.Event("scroll"))
+
+  panel.querySelector("textarea").value = "go"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(200)
+
+  assert.equal(msgs.scrollTop, 599, "following means staying at the end")
+})
+
+test("a reader a few pixels short of the end still follows", async () => {
+  // Browsers leave fractional gaps, and a reader who meant to be at the end
+  // often sits a pixel or two above it. Treating that as "reading back" would
+  // silently stop following for someone who never scrolled on purpose.
+  const { panel, msgs } = await streamingPanelScrolledUp()
+  msgs.scrollTop = 580                                   // 19px short of 599
+  msgs.dispatchEvent(new window.Event("scroll"))
+
+  panel.querySelector("textarea").value = "go"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(100)
+  msgs.scrollTop = 580
+  msgs.dispatchEvent(new window.Event("scroll"))
+  await tick(400)
+
+  assert.equal(msgs.scrollTop, 599, "close to the end counts as the end")
+})
+
+test("asking a new question brings the reader back to the end", async () => {
+  // Otherwise someone who scrolled up, then asked something, would watch a
+  // panel that never moves and looks broken.
+  const { panel, msgs } = await streamingPanelScrolledUp()
+  msgs.scrollTop = 0
+  msgs.dispatchEvent(new window.Event("scroll"))
+
+  panel.querySelector("textarea").value = "go"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(200)
+
+  assert.equal(msgs.scrollTop, 599, "the new turn should be visible")
+})
+
+// Every kind of mid-turn update has to respect the reader, not just text. On
+// the turn where this was reported, thinking blocks and tool chips were
+// appearing the whole time, and any one of them pinning is enough to make the
+// panel unscrollable again.
+
+test("thinking output does not drag a reader who scrolled up", async () => {
+  hubLlms = { llms: [ { family: "ollama", available_models: [ { value: "m1", label: "m1" } ] } ] }
+  // gap 150 so the thinking block is CREATED after the scroll below, not
+  // before it: otherwise the site that creates it is never exercised while the
+  // reader is away, and pinning there would go unnoticed.
+  streamScript = [ { gap: 150, parts: [
+    'event: text_delta\ndata: {"delta":"starting. "}\n\n',
+    'event: thinking_delta\ndata: {"delta":"considering the first option. "}\n\n',
+    'event: thinking_delta\ndata: {"delta":"considering the second option. "}\n\n',
+    'event: done\ndata: {"content":"starting. ","finish_reason":"stop"}\n\n'
+  ] } ]
+  const panel = await mount()
+  const msgs = panel.querySelector(".lmw-messages")
+  giveGeometry(msgs, { clientHeight: 450, scrollHeight: 1049 })
+
+  panel.querySelector("textarea").value = "go"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(80)
+  msgs.scrollTop = 120
+  msgs.dispatchEvent(new window.Event("scroll"))
+  await tick(700)
+
+  assert.match(panel.textContent, /considering the second option/, "the thinking must have streamed in")
+  assert.equal(msgs.scrollTop, 120, "a thinking block and its deltas must not pin the view")
+})
+
+test("a tool chip appearing does not drag a reader who scrolled up", async () => {
+  window.aiActions = { note_it: () => "done" }
+  hubLlms = { llms: [ { family: "ollama", available_models: [ { value: "m1", label: "m1" } ] } ] }
+  streamScript = [
+    { gap: 150, parts: [
+      'event: text_delta\ndata: {"delta":"about to call. "}\n\n',
+      'event: tool_call\ndata: {"tool_call":{"id":"c1","name":"note_it","arguments":{}}}\n\n',
+      'event: done\ndata: {"content":"about to call. ","finish_reason":"tool_calls"}\n\n'
+    ] },
+    'event: done\ndata: {"content":"finished","finish_reason":"stop"}\n\n'
+  ]
+  await mountWithPage({ typedCards: [ { tools: [ { name: "note_it", description: "d", inputSchema: {} } ] } ] })
+  const panel = document.getElementById("llm-meta-widget-chat")
+  const msgs = panel.querySelector(".lmw-messages")
+  giveGeometry(msgs, { clientHeight: 450, scrollHeight: 1049 })
+
+  panel.querySelector("textarea").value = "go"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(80)
+  msgs.scrollTop = 140
+  msgs.dispatchEvent(new window.Event("scroll"))
+  await tick(700)
+
+  assert.match(panel.textContent, /note_it/, "the tool chip must have been added")
+  assert.equal(msgs.scrollTop, 140, "a tool chip must not pin the view")
+  delete window.aiActions
+})
+
+test("a system notice appearing mid-turn does not drag the reader", async () => {
+  // The notice that an old tool result was dropped arrives through appendTurn,
+  // in the middle of a turn, exactly when someone might be reading back
+  // through what the tool returned.
+  hubLlms = { llms: [ { family: "ollama", available_models: [
+    { value: "m1", label: "m1", supports_tools: true, max_input_tokens: 64_000 } ] } ] }
+  hubServers = [ { uuid: "s1", name: "big", tools: [ { id: "t1", name: "big_tool", description: "d", input_schema: {} } ] } ]
+  hubToolResult = { text: "z".repeat(600_000) }
+  streamScript = [
+    { gap: 150, parts: [
+      'event: text_delta\ndata: {"delta":"calling the tool. "}\n\n',
+      'event: tool_call\ndata: {"tool_call":{"id":"c1","name":"big_tool","arguments":{}}}\n\n',
+      'event: done\ndata: {"content":"calling the tool. ","finish_reason":"tool_calls"}\n\n'
+    ] },
+    'event: done\ndata: {"content":"finished","finish_reason":"stop"}\n\n'
+  ]
+  const block = document.createElement("script")
+  block.type = "application/json"
+  block.id = "remote-mcp-tools"
+  block.textContent = JSON.stringify([ { id: "t1", name: "big_tool", description: "d", input_schema: {} } ])
+  document.body.innerHTML = ""
+  document.body.appendChild(block)
+  const el = document.createElement("llm-meta-widget")
+  for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "",
+                                          "tool-hub-url": HUB, "remote-tools-schema-id": "remote-mcp-tools" })) {
+    el.setAttribute(k, v)
+  }
+  document.body.appendChild(el)
+  await tick(150)
+  const panel = document.getElementById("llm-meta-widget-chat")
+  const msgs = panel.querySelector(".lmw-messages")
+  giveGeometry(msgs, { clientHeight: 450, scrollHeight: 1049 })
+
+  panel.querySelector("textarea").value = "go"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(80)
+  msgs.scrollTop = 160
+  msgs.dispatchEvent(new window.Event("scroll"))
+  await tick(900)
+
+  assert.match(panel.textContent, /Dropped an earlier big_tool result/, "the notice must have appeared")
+  assert.equal(msgs.scrollTop, 160, "a system notice must not pin the view")
 })

@@ -26,7 +26,8 @@ import { runChatLoop, fetchMcpManifest, listMcpPrompts, getMcpPrompt,
          readStaticPrimitivesCard, getPagePrompt,
          planPageResources, pageResourceLinesForTurn,
          promptArgState, mergeStaticPrimitivesCards,
-         PAGE_CARD_MEDIA_TYPE, pageHandlers } from "./orchestrator.js";
+         PAGE_CARD_MEDIA_TYPE, pageHandlers,
+         modelWindowFrom, resourceBudgetBytes } from "./orchestrator.js";
 import { marked } from "./marked.esm.js";
 import { readConfig } from "./config.js";
 import conversationCss from "../../stylesheets/llm_meta_widget/conversation.css";
@@ -154,6 +155,28 @@ function boot(cfg) {
   	var root         = document.getElementById("llm-meta-widget-chat");
   	var toggleBtn    = document.getElementById("llm-meta-widget-toggle");
   	var historyEl    = root.querySelector(".lmw-messages");
+
+  	// Following the output, or reading back through it?
+  	//
+  	// Every mid-turn pin used to be unconditional: a tool chip, a thinking
+  	// block, or any delta slammed the view back to the end. On a short answer
+  	// nobody notices. On a long tool turn the deltas keep coming for minutes,
+  	// and the reader cannot scroll anywhere by any means — wheel, trackpad,
+  	// keyboard — because each attempt is undone within milliseconds. Reported
+  	// from TogoMCP and reproduced on PubDictionaries (2026-10-16).
+  	//
+  	// The reader's own scrolling says which they are doing: leave the bottom
+  	// and we stop following; come back to it and we resume.
+  	var SCROLL_PIN_SLACK = 40;   // px from the end still counts as "at the end"
+  	var followingOutput  = true;
+
+  	function atBottom() {
+  		return historyEl.scrollHeight - historyEl.scrollTop - historyEl.clientHeight <= SCROLL_PIN_SLACK;
+  	}
+  	function pinToBottom() { historyEl.scrollTop = historyEl.scrollHeight; }
+  	// Called wherever content is added mid-turn.
+  	function pinIfFollowing() { if (followingOutput) pinToBottom(); }
+  	historyEl.addEventListener("scroll", function() { followingOutput = atBottom(); });
   	var formEl       = root.querySelector(".lmw-form");
   	var inputEl      = root.querySelector(".lmw-input");
   	var clearBtn     = root.querySelector(".lmw-clear");
@@ -379,8 +402,6 @@ function boot(cfg) {
   	}
 
   	function refreshRemoteToolsFromPicker() {
-  		// Flatten every SELECTED tool (across all servers) into remoteTools,
-  		// adapted to runChatLoop's expected { id, name, description, input_schema }.
   		var flat = [];
   		var seen = {};
   		hubMcpServers.forEach(function(s) {
@@ -456,6 +477,10 @@ function boot(cfg) {
   					//   - Ollama:                   `available_models: [{ value, label, ... }]`
   					// Anon widget uses api_key_uuid = "ollama-local" so only Ollama models
   					// are invocable; filter to that family and use its subshape.
+  					// Learned from every family, not only the one the picker lists: the
+  					// configured model is often hosted while the picker shows local ones.
+  					llmsPayload = payload;
+  					modelWindow = modelWindowFrom(payload, MODEL);
   					var flat = [];
   					(payload.llms || []).forEach(function(llm) {
   						if (llm.family !== "ollama") return;
@@ -601,7 +626,12 @@ function boot(cfg) {
   	}
 
   	if (modelPicker) {
-  		modelPicker.addEventListener("change", function() { MODEL = modelPicker.value; });
+  		modelPicker.addEventListener("change", function() {
+  			MODEL = modelPicker.value;
+  			// The window belongs to the model, not to the session: a switch has to
+  			// move it, or every budget below is sized for the model left behind.
+  			modelWindow = modelWindowFrom(llmsPayload, MODEL);
+  		});
   	}
 
   	// Close the tools dropdown on any click outside its area. Native
@@ -634,25 +664,52 @@ function boot(cfg) {
   	var hostWidePrompts = pageCard.prompts.map(function(p) {
   		return Object.assign({}, p, { source: "page" });
   	});
+  	// How much room the selected model has, from /api/llms. null until that
+  	// call answers, and null forever if the hub is older than the field — in
+  	// which case the loop budgets nothing, exactly as it always did.
+  	var modelWindow = null;
+  	// The /api/llms answer, kept so switching model in the picker can resolve
+  	// that model's window. Without it a visitor who switches from a 262k model
+  	// to a 32k one keeps the big window — no eviction, and a resource budget
+  	// far larger than the small model can hold.
+  	var llmsPayload = null;
   	var resourceContext = null;   // payload of the host's reference resource
   	var resourcePlan = null;      // the pre-flight decision, kept so Clear can re-arm the gate
 
   	// Beyond ~2k tokens a reference resource starts crowding out the
   	// conversation on a 32k-context local model — production PubDictionaries
-  	// is 218 dictionaries / ~35KB / ~10k tokens.
-  	var RESOURCE_BUDGET_BYTES = 8000;
+  	// is 218 dictionaries / ~35KB / ~10k tokens. That share of the window is
+  	// what scales now the window is known: 8000 remains the 32k case, and the
+  	// floor for a model whose window the hub does not report.
+  	function resourceBudget() { return resourceBudgetBytes(modelWindow); }
 
-  	// The page's own resources, planned once from the card. Unlike the hub's
-  	// single reference resource these are a list: a page declares one per
-  	// thing it knows, each with its own description.
-  	var pageResourcePlans = planPageResources({
-  		entries:     pageCard.resources,
-  		budgetBytes: RESOURCE_BUDGET_BYTES,
-  		onSkip: function(plan) {
-  			console.info("[llm_meta_widget] not attaching " + plan.uri +
-  			             " (" + plan.reason + ", size=" + plan.size + ")");
+  	// The page's own resources, planned from the card — but NOT here. Unlike
+  	// the hub's single reference resource these are a list: a page declares one
+  	// per thing it knows, each with its own description.
+  	//
+  	// Planning them at this point would pin every one of them to the floor
+  	// budget: the budget follows the model's window, which arrives with
+  	// /api/llms a moment after this runs. The budget was derived and then
+  	// never used, so a 128k model could attach nothing a 32k one could not.
+  	// Re-planned whenever the budget changes, which is at most once per model
+  	// switch.
+  	var pageResourcePlans = null;
+  	var pageResourcePlansBudget = null;
+  	function pageResourcePlansNow() {
+  		var budget = resourceBudget();
+  		if (pageResourcePlans === null || budget !== pageResourcePlansBudget) {
+  			pageResourcePlansBudget = budget;
+  			pageResourcePlans = planPageResources({
+  				entries:     pageCard.resources,
+  				budgetBytes: budget,
+  				onSkip: function(plan) {
+  					console.info("[llm_meta_widget] not attaching " + plan.uri +
+  					             " (" + plan.reason + ", size=" + plan.size + ")");
+  				}
+  			});
   		}
-  	});
+  		return pageResourcePlans;
+  	}
   	var pageResourceCache = {};
 
 
@@ -694,7 +751,7 @@ function boot(cfg) {
   				// the bug this shape prevents.
   				var loaded = await loadHostResource({
   					endpoint:    endpoint,
-  					budgetBytes: RESOURCE_BUDGET_BYTES,
+  					budgetBytes: resourceBudget(),
   					list:        listMcpResources,
   					read:        readMcpResource,
   					onSkip: function(plan) {
@@ -772,7 +829,9 @@ function boot(cfg) {
   			});
   			if (body.parentNode) body.parentNode.appendChild(row);
   		});
-  		historyEl.scrollTop = historyEl.scrollHeight;
+  		// Unconditional: a restored conversation opens at its end, which is where
+  		// the reader left off. Nothing is streaming yet, so nobody is being yanked.
+  		pinToBottom();
   		return true;
   	}
 
@@ -914,7 +973,7 @@ function boot(cfg) {
   		div.appendChild(document.createTextNode(" "));
   		div.appendChild(body);
   		historyEl.appendChild(div);
-  		historyEl.scrollTop = historyEl.scrollHeight;
+  		pinIfFollowing();
   		body.roleLabel = label;   // so a turn in flight can show it is working
   		return body;
   	}
@@ -926,6 +985,31 @@ function boot(cfg) {
   	function renderMarkdownInto(el, mdText) {
   		try { el.innerHTML = marked.parse(mdText); }
   		catch (e) { el.textContent = mdText; }  // fall back to raw on parse error
+  		wrapTablesForScrolling(el);
+  	}
+
+  	// A markdown table gets its own horizontal scroller.
+  	//
+  	// `display: block; overflow-x: auto; max-width: 100%` on the table alone
+  	// does NOT do this: the box is capped at the bubble width, so the table
+  	// re-lays out to fit and squeezes its columns, and `word-wrap: break-word`
+  	// from .message then breaks every word one character per line. A six-column
+  	// table of genomic notation became a column of single letters thousands of
+  	// pixels tall (seen on PubDictionaries, 2026-10-16).
+  	//
+  	// The table has to sit INSIDE a capped box and keep its own natural width,
+  	// which is what a wrapper gives it.
+  	function wrapTablesForScrolling(el) {
+  		var tables = el.querySelectorAll("table");
+  		for (var i = 0; i < tables.length; i++) {
+  			var table = tables[i];
+  			// No already-wrapped guard: renderMarkdownInto replaces the whole
+  			// innerHTML first, so every table reaching here is freshly parsed.
+  			var wrap = document.createElement("div");
+  			wrap.className = "lmw-table-scroll";
+  			table.parentNode.insertBefore(wrap, table);
+  			wrap.appendChild(table);
+  		}
   	}
 
   	// Role labels mirror llm_meta_chat's chats/_message.html.erb:
@@ -985,7 +1069,7 @@ function boot(cfg) {
   		chip.dataset.tool = toolCall.name;
   		row.appendChild(chip);
   		pendingChips.push(chip);
-  		historyEl.scrollTop = historyEl.scrollHeight;
+  		pinIfFollowing();
   	}
 
   	function resolveToolCall(outcome) {
@@ -1033,7 +1117,7 @@ function boot(cfg) {
   		} else {
   			historyEl.appendChild(details);
   		}
-  		historyEl.scrollTop = historyEl.scrollHeight;
+  		pinIfFollowing();
   		currentThinkingBlock = details;
   		currentThinkingBody  = body;
   		return body;
@@ -1137,7 +1221,7 @@ function boot(cfg) {
   			cached:      resourceContext,
   			endpoint:    resourcePlan && resourcePlan.endpoint,
   			read:        readMcpResource,
-  			budgetBytes: RESOURCE_BUDGET_BYTES
+  			budgetBytes: resourceBudget()
   		});
   		resourceContext = turn.cached;
 
@@ -1145,9 +1229,9 @@ function boot(cfg) {
   		// Volatile ones are re-read here, which is the whole point: a form field
   		// read at boot is already stale by the time anyone sends a message.
   		var page = await pageResourceLinesForTurn({
-  			plans:       pageResourcePlans,
+  			plans:       pageResourcePlansNow(),
   			resources:   handlers.resources,
-  			budgetBytes: RESOURCE_BUDGET_BYTES,
+  			budgetBytes: resourceBudget(),
   			cache:       pageResourceCache
   		});
   		pageResourceCache = page.cache;
@@ -1182,6 +1266,9 @@ function boot(cfg) {
   		var userText = inputEl.value.trim();
   		if (!userText) return;
   		inputEl.value = "";
+  		// Asking something is a request to see the answer: whatever the reader was
+  		// looking at before, they are following the output again from here.
+  		followingOutput = true;
   		appendTurn("user", userText, pendingTurnLabel);
   		pendingTurnLabel = null;
 
@@ -1226,8 +1313,16 @@ function boot(cfg) {
   				hostWideTools: hostWideTools,
   				aiActions:     handlers.tools,
   				maxRounds:     MAX_ROUNDS,
+  				contextWindow: modelWindow,
   				provider:      LLM_PROVIDER === "ollama" ? "ollama" : "hub",
   				signal:        currentAbort.signal,
+  				onContextEvicted: function(dropped) {
+  					// Said out loud: a context that quietly thins out makes a later answer
+  					// look inexplicably worse, with nothing on screen to explain it.
+  					var last = dropped[dropped.length - 1];
+  					var name = (last && last.name) ? last.name : "tool";
+  					appendTurn("system", "Dropped an earlier " + name + " result to make room in the model's context. Ask again if you need it.");
+  				},
   				onToolCall: function(toolCall) {
   					announceToolCall(toolCall);
   					// At once, not throttled: this call may be the one that navigates, and
@@ -1264,7 +1359,7 @@ function boot(cfg) {
   					var body = ensureThinkingBlock();
   					body.appendChild(document.createTextNode(delta));
   					body.scrollTop = body.scrollHeight;
-  					historyEl.scrollTop = historyEl.scrollHeight;
+  					pinIfFollowing();
   				},
   				onTextDelta: function(delta) {
   					markDone(assistantBody.roleLabel);
@@ -1273,7 +1368,7 @@ function boot(cfg) {
   					renderMarkdownInto(assistantBody, assistantMarkdown);
   					liveTurn.content = assistantMarkdown;
   					persistSoon();
-  					historyEl.scrollTop = historyEl.scrollHeight;
+  					pinIfFollowing();
   				}
   			});
   			// The turn was recorded here until 0.11.1, after the loop returned — which

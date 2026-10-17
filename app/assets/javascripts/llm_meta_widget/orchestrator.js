@@ -325,6 +325,16 @@ export async function runChatLoop(opts) {
     remoteTools = [],
     hostWideTools = [],
     maxRounds = 10,
+    // The model's own context window, from /api/llms. Without it the loop
+    // cannot know how much room is left, so it budgets nothing and a long
+    // tool-heavy turn is refused by the provider instead of degrading.
+    contextWindow = null,
+    // Tokens held back for the answer: a request that fills the window leaves
+    // nothing to generate into.
+    outputReserve = 2048,
+    // Called when a tool result is dropped to make room, so the panel can say
+    // so rather than the context quietly thinning.
+    onContextEvicted,
     // "hub" (default) talks to llm_meta_server; "ollama" talks straight to an
     // Ollama, with no server component of ours in between. The loop is the
     // same either way — only the call is swapped.
@@ -347,7 +357,7 @@ export async function runChatLoop(opts) {
     ...singleOpts
   } = opts
 
-  const messages     = [ ...(singleOpts.messages || []) ]
+  let messages       = [ ...(singleOpts.messages || []) ]
   const remoteByName = Object.fromEntries((remoteTools || []).map((t) => [ t.name, t ]))
   // Class 2: host-wide MCP tools (well-known). Map name→{endpoint, ...} for
   // dispatch. If the same name appears in aiActions, Class 3 wins there
@@ -366,6 +376,10 @@ export async function runChatLoop(opts) {
   const mergedLocalTools = Object.values(inlineByName)
 
   const rounds = []
+  const evicted = []
+  // Fixed for the turn: the declared tool set does not change between rounds.
+  const toolsTokens = estimateToolsTokens([].concat(
+  	singleOpts.localTools || [], remoteTools || [], hostWideTools || []))
   const allDispatched = []
   const allSkipped = []
   let lastResult = null
@@ -408,6 +422,18 @@ export async function runChatLoop(opts) {
     onRoundStart?.(round)
 
     // The loop is the same whoever answers; only the call differs.
+    // Make room before sending, rather than after being refused. Only old
+    // tool results are given up; see evictOldToolResults.
+    const room = evictOldToolResults({
+    	messages, window: contextWindow, dropped: evicted,
+    	// The tools take their share of the window before any message does.
+    	reserve: outputReserve + toolsTokens
+    });
+    if (room.messages !== messages) {
+    	messages = room.messages;
+    	onContextEvicted?.(evicted.slice());
+    }
+
     const call = provider === "ollama" ? ollamaChatCall : singleLlmCall
     const turnResult = await call({
       ...singleOpts,
@@ -891,6 +917,111 @@ export const PAGE_CARD_MEDIA_TYPE = "application/mcp-static-primitives+json"
 // card, find the handlers and dispatch. The three legacy globals
 // (aiActions/aiPrompts/aiResources) are names only this widget knows, and are
 // configurable per page, so nothing outside could rely on them.
+// How much room a model has, read from /api/llms — the one call the widget
+// already makes before a turn. Scans every family, because the picker shows
+// only the local ones while the configured model is often hosted, and the two
+// families use different shapes for the same thing (`value` vs `name`).
+//
+// Returns null when the hub does not say. Null means "no budget to work with",
+// which is not the same as zero, and every caller below treats it as "do not
+// guess" rather than "no room".
+// How many bytes of reference resources a turn may attach, derived from the
+// model's window instead of guessed. The old fixed 8000 was chosen as "~2k
+// tokens, beyond which a resource crowds out the conversation on a 32k local
+// model" — which is 6.25% of that window, so the same share reproduces 8000 at
+// 32k exactly and gives a 128k model the 32 KB it can afford.
+//
+// The floor keeps the previous behaviour whenever the window is unknown. The
+// cap is there because these bytes are fetched and inlined on every turn: the
+// largest real catalog (PubDictionaries, 218 dictionaries) is ~35 KB, so 64 KB
+// is already generous and a 1M-token model does not need 250 KB of it.
+export const RESOURCE_SHARE_OF_WINDOW = 0.0625
+
+export function resourceBudgetBytes(window, { floor = 8000, cap = 64_000 } = {}) {
+  if (!window || !Number.isFinite(window)) return floor
+  const share = Math.round(window * RESOURCE_SHARE_OF_WINDOW * CHARS_PER_TOKEN)
+  return Math.min(cap, Math.max(floor, share))
+}
+
+// A rough token count, the same shape the hub's own estimator uses: characters
+// over four, plus a fixed cost per message. Deliberately approximate — it is
+// used to decide "drop the oldest tool result", never to fill the window
+// exactly, and it errs high so the decision is made early rather than late.
+export const CHARS_PER_TOKEN = 4
+export const MESSAGE_OVERHEAD_TOKENS = 4
+
+export function estimateTokens(messages) {
+  return (messages || []).reduce((sum, m) => {
+    const content = typeof m?.content === "string" ? m.content : JSON.stringify(m?.content ?? "")
+    return sum + Math.ceil(content.length / CHARS_PER_TOKEN) + MESSAGE_OVERHEAD_TOKENS
+  }, 0)
+}
+
+// What the declared tools cost in the window. They are part of every request:
+// names, descriptions and JSON schemas. On the hub path the browser sends only
+// `tool_ids` and the hub expands the schemas, but the browser listed those
+// tools to build its picker, so it still has what it needs to price them.
+//
+// This is not a detail. TogoMCP declares around twenty tools, which is a few
+// thousand tokens standing in the window before the conversation starts; a
+// budget counting only messages runs low and evicts too late to help.
+export function estimateToolsTokens(tools) {
+  const text = (tools || []).map((t) => JSON.stringify({
+    name: t?.name, description: t?.description, schema: t?.input_schema || t?.inputSchema
+  })).join("")
+  return Math.ceil(text.length / CHARS_PER_TOKEN)
+}
+
+// Makes room for the next round by dropping the OLDEST tool results, which is
+// the one eviction a chat loop can justify: the model has already read them and
+// said what it made of them in the assistant turn that follows, so its own
+// summary survives. Nothing else is touched — not the system prompt, not the
+// questions, not the assistant's words.
+//
+// Each dropped result leaves a marker in its place, because a tool message must
+// still answer its tool_call_id: a provider that sees a call with no result
+// rejects the request, and a model that sees no mention of the result would
+// happily call the same tool again.
+//
+// Returns the messages unchanged when the window is unknown. Guessing a window
+// would be worse than not budgeting: too low throws away context the turn
+// needed, and too high fails at the provider anyway.
+export function evictOldToolResults({ messages, window, reserve = 0, dropped = [] }) {
+  if (!window || !Number.isFinite(window)) return { messages, dropped }
+
+  const budget = window - reserve
+  if (estimateTokens(messages) <= budget) return { messages, dropped }
+
+  const out = messages.slice()
+  for (let i = 0; i < out.length; i++) {
+    if (estimateTokens(out) <= budget) break
+    const m = out[i]
+    if (m?.role !== "tool") continue
+    if (typeof m.content === "string" && m.content.startsWith("[dropped")) continue
+
+    dropped.push({ name: m.name, tokens: estimateTokens([ m ]) })
+    out[i] = Object.assign({}, m, {
+      content: "[dropped to make room in the context window. Call the tool again " +
+               "if you still need it, with a narrower query.]"
+    })
+  }
+  return { messages: out, dropped }
+}
+
+export function modelWindowFrom(payload, modelId) {
+  for (const family of (payload && payload.llms) || []) {
+    const entries = [].concat(family.available_models || [], family.models || [])
+    for (const entry of entries) {
+      if (!entry) continue
+      const id = entry.value || entry.name
+      if (id !== modelId) continue
+      const window = Number(entry.max_input_tokens)
+      return Number.isFinite(window) && window > 0 ? window : null
+    }
+  }
+  return null
+}
+
 export const PAGE_GLOBAL_TRANSPORT = "page-global"
 
 export function declaredPageGlobal(card) {

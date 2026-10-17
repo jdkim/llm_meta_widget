@@ -109,12 +109,28 @@
 	white-space: pre;
 }
 .llm-meta-conversation .message-content pre code { background: none; padding: 0; }
+/* The scroller is the WRAPPER, not the table: a table that is itself the
+ * scrolling box gets capped at the bubble width and squeezes its columns
+ * instead of overflowing, and .message's word-wrap then breaks every word
+ * one character per line. The wrapper is capped; the table inside keeps its
+ * natural width and scrolls sideways. */
+.llm-meta-conversation .message-content .lmw-table-scroll {
+	overflow-x: auto;
+	margin: 0.5em 0;
+}
 .llm-meta-conversation .message-content table {
 	border-collapse: collapse;
-	margin: 0.5em 0;
-	display: block;
-	overflow-x: auto;
-	max-width: 100%;
+	/* min-width so a narrow table still fills the bubble, width:max-content so
+	 * a wide one is laid out at its natural size and the wrapper scrolls. */
+	width: max-content;
+	min-width: 100%;
+}
+/* Inside a table, breaking mid-token is what produced the one-letter columns;
+ * cells keep their words whole and the wrapper scrolls instead. */
+.llm-meta-conversation .message-content th,
+.llm-meta-conversation .message-content td {
+	word-wrap: normal;
+	overflow-wrap: normal;
 }
 .llm-meta-conversation .message-content th,
 .llm-meta-conversation .message-content td {

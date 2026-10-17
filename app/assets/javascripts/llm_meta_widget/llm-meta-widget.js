@@ -168,6 +168,16 @@ async function runChatLoop(opts) {
     remoteTools = [],
     hostWideTools = [],
     maxRounds = 10,
+    // The model's own context window, from /api/llms. Without it the loop
+    // cannot know how much room is left, so it budgets nothing and a long
+    // tool-heavy turn is refused by the provider instead of degrading.
+    contextWindow = null,
+    // Tokens held back for the answer: a request that fills the window leaves
+    // nothing to generate into.
+    outputReserve = 2048,
+    // Called when a tool result is dropped to make room, so the panel can say
+    // so rather than the context quietly thinning.
+    onContextEvicted,
     // "hub" (default) talks to llm_meta_server; "ollama" talks straight to an
     // Ollama, with no server component of ours in between. The loop is the
     // same either way — only the call is swapped.
@@ -189,7 +199,7 @@ async function runChatLoop(opts) {
     onPhase,
     ...singleOpts
   } = opts;
-  const messages = [...singleOpts.messages || []];
+  let messages = [...singleOpts.messages || []];
   const remoteByName = Object.fromEntries((remoteTools || []).map((t) => [t.name, t]));
   const hostWideByName = Object.fromEntries((hostWideTools || []).map((t) => [t.name, t]));
   const toolIds = [...singleOpts.toolIds || [], ...(remoteTools || []).map((t) => t.id)];
@@ -200,6 +210,12 @@ async function runChatLoop(opts) {
   }
   const mergedLocalTools = Object.values(inlineByName);
   const rounds = [];
+  const evicted = [];
+  const toolsTokens = estimateToolsTokens([].concat(
+    singleOpts.localTools || [],
+    remoteTools || [],
+    hostWideTools || []
+  ));
   const allDispatched = [];
   const allSkipped = [];
   let lastResult = null;
@@ -230,6 +246,17 @@ async function runChatLoop(opts) {
   for (let round = 0; round < maxRounds; round++) {
     if (signal?.aborted) throw new DOMException("aborted", "AbortError");
     onRoundStart?.(round);
+    const room = evictOldToolResults({
+      messages,
+      window: contextWindow,
+      dropped: evicted,
+      // The tools take their share of the window before any message does.
+      reserve: outputReserve + toolsTokens
+    });
+    if (room.messages !== messages) {
+      messages = room.messages;
+      onContextEvicted?.(evicted.slice());
+    }
     const call = provider === "ollama" ? ollamaChatCall : singleLlmCall;
     const turnResult = await call({
       ...singleOpts,
@@ -561,6 +588,58 @@ function parseSseFrame(raw) {
 }
 var STATIC_PRIMITIVES_META = "io.modelcontextprotocol/static-primitives";
 var PAGE_CARD_MEDIA_TYPE = "application/mcp-static-primitives+json";
+var RESOURCE_SHARE_OF_WINDOW = 0.0625;
+function resourceBudgetBytes(window2, { floor = 8e3, cap = 64e3 } = {}) {
+  if (!window2 || !Number.isFinite(window2)) return floor;
+  const share = Math.round(window2 * RESOURCE_SHARE_OF_WINDOW * CHARS_PER_TOKEN);
+  return Math.min(cap, Math.max(floor, share));
+}
+var CHARS_PER_TOKEN = 4;
+var MESSAGE_OVERHEAD_TOKENS = 4;
+function estimateTokens(messages) {
+  return (messages || []).reduce((sum, m) => {
+    const content = typeof m?.content === "string" ? m.content : JSON.stringify(m?.content ?? "");
+    return sum + Math.ceil(content.length / CHARS_PER_TOKEN) + MESSAGE_OVERHEAD_TOKENS;
+  }, 0);
+}
+function estimateToolsTokens(tools) {
+  const text = (tools || []).map((t) => JSON.stringify({
+    name: t?.name,
+    description: t?.description,
+    schema: t?.input_schema || t?.inputSchema
+  })).join("");
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+function evictOldToolResults({ messages, window: window2, reserve = 0, dropped = [] }) {
+  if (!window2 || !Number.isFinite(window2)) return { messages, dropped };
+  const budget = window2 - reserve;
+  if (estimateTokens(messages) <= budget) return { messages, dropped };
+  const out = messages.slice();
+  for (let i = 0; i < out.length; i++) {
+    if (estimateTokens(out) <= budget) break;
+    const m = out[i];
+    if (m?.role !== "tool") continue;
+    if (typeof m.content === "string" && m.content.startsWith("[dropped")) continue;
+    dropped.push({ name: m.name, tokens: estimateTokens([m]) });
+    out[i] = Object.assign({}, m, {
+      content: "[dropped to make room in the context window. Call the tool again if you still need it, with a narrower query.]"
+    });
+  }
+  return { messages: out, dropped };
+}
+function modelWindowFrom(payload, modelId) {
+  for (const family of payload && payload.llms || []) {
+    const entries = [].concat(family.available_models || [], family.models || []);
+    for (const entry of entries) {
+      if (!entry) continue;
+      const id = entry.value || entry.name;
+      if (id !== modelId) continue;
+      const window2 = Number(entry.max_input_tokens);
+      return Number.isFinite(window2) && window2 > 0 ? window2 : null;
+    }
+  }
+  return null;
+}
 var PAGE_GLOBAL_TRANSPORT = "page-global";
 function declaredPageGlobal(card) {
   for (const remote of card && card.remotes || []) {
@@ -3237,12 +3316,28 @@ var conversation_default = `/*
 	white-space: pre;
 }
 .llm-meta-conversation .message-content pre code { background: none; padding: 0; }
+/* The scroller is the WRAPPER, not the table: a table that is itself the
+ * scrolling box gets capped at the bubble width and squeezes its columns
+ * instead of overflowing, and .message's word-wrap then breaks every word
+ * one character per line. The wrapper is capped; the table inside keeps its
+ * natural width and scrolls sideways. */
+.llm-meta-conversation .message-content .lmw-table-scroll {
+	overflow-x: auto;
+	margin: 0.5em 0;
+}
 .llm-meta-conversation .message-content table {
 	border-collapse: collapse;
-	margin: 0.5em 0;
-	display: block;
-	overflow-x: auto;
-	max-width: 100%;
+	/* min-width so a narrow table still fills the bubble, width:max-content so
+	 * a wide one is laid out at its natural size and the wrapper scrolls. */
+	width: max-content;
+	min-width: 100%;
+}
+/* Inside a table, breaking mid-token is what produced the one-letter columns;
+ * cells keep their words whole and the wrapper scrolls instead. */
+.llm-meta-conversation .message-content th,
+.llm-meta-conversation .message-content td {
+	word-wrap: normal;
+	overflow-wrap: normal;
 }
 .llm-meta-conversation .message-content th,
 .llm-meta-conversation .message-content td {
@@ -3844,6 +3939,20 @@ function boot(cfg) {
   var root = document.getElementById("llm-meta-widget-chat");
   var toggleBtn = document.getElementById("llm-meta-widget-toggle");
   var historyEl = root.querySelector(".lmw-messages");
+  var SCROLL_PIN_SLACK = 40;
+  var followingOutput = true;
+  function atBottom() {
+    return historyEl.scrollHeight - historyEl.scrollTop - historyEl.clientHeight <= SCROLL_PIN_SLACK;
+  }
+  function pinToBottom() {
+    historyEl.scrollTop = historyEl.scrollHeight;
+  }
+  function pinIfFollowing() {
+    if (followingOutput) pinToBottom();
+  }
+  historyEl.addEventListener("scroll", function() {
+    followingOutput = atBottom();
+  });
   var formEl = root.querySelector(".lmw-form");
   var inputEl = root.querySelector(".lmw-input");
   var clearBtn = root.querySelector(".lmw-clear");
@@ -4069,6 +4178,8 @@ function boot(cfg) {
       tasks.push(fetch(LLM_BASE + "/api/llms", { headers: { "Accept": "application/json" } }).then(function(r) {
         return r.ok ? r.json() : { llms: [] };
       }).then(function(payload) {
+        llmsPayload = payload;
+        modelWindow = modelWindowFrom(payload, MODEL);
         var flat = [];
         (payload.llms || []).forEach(function(llm) {
           if (llm.family !== "ollama") return;
@@ -4189,6 +4300,7 @@ function boot(cfg) {
   if (modelPicker) {
     modelPicker.addEventListener("change", function() {
       MODEL = modelPicker.value;
+      modelWindow = modelWindowFrom(llmsPayload, MODEL);
     });
   }
   if (toolsPicker) {
@@ -4213,16 +4325,29 @@ function boot(cfg) {
   var hostWidePrompts = pageCard.prompts.map(function(p) {
     return Object.assign({}, p, { source: "page" });
   });
+  var modelWindow = null;
+  var llmsPayload = null;
   var resourceContext = null;
   var resourcePlan = null;
-  var RESOURCE_BUDGET_BYTES = 8e3;
-  var pageResourcePlans = planPageResources({
-    entries: pageCard.resources,
-    budgetBytes: RESOURCE_BUDGET_BYTES,
-    onSkip: function(plan) {
-      console.info("[llm_meta_widget] not attaching " + plan.uri + " (" + plan.reason + ", size=" + plan.size + ")");
+  function resourceBudget() {
+    return resourceBudgetBytes(modelWindow);
+  }
+  var pageResourcePlans = null;
+  var pageResourcePlansBudget = null;
+  function pageResourcePlansNow() {
+    var budget = resourceBudget();
+    if (pageResourcePlans === null || budget !== pageResourcePlansBudget) {
+      pageResourcePlansBudget = budget;
+      pageResourcePlans = planPageResources({
+        entries: pageCard.resources,
+        budgetBytes: budget,
+        onSkip: function(plan) {
+          console.info("[llm_meta_widget] not attaching " + plan.uri + " (" + plan.reason + ", size=" + plan.size + ")");
+        }
+      });
     }
-  });
+    return pageResourcePlans;
+  }
   var pageResourceCache = {};
   restoreConversation();
   var promptsEl = root.querySelector(".lmw-prompts");
@@ -4243,7 +4368,7 @@ function boot(cfg) {
       if (resourcePlan === null) {
         var loaded = await loadHostResource({
           endpoint,
-          budgetBytes: RESOURCE_BUDGET_BYTES,
+          budgetBytes: resourceBudget(),
           list: listMcpResources,
           read: readMcpResource,
           onSkip: function(plan) {
@@ -4305,7 +4430,7 @@ function boot(cfg) {
       });
       if (body.parentNode) body.parentNode.appendChild(row);
     });
-    historyEl.scrollTop = historyEl.scrollHeight;
+    pinToBottom();
     return true;
   }
   function renderWelcome() {
@@ -4406,7 +4531,7 @@ function boot(cfg) {
     div.appendChild(document.createTextNode(" "));
     div.appendChild(body);
     historyEl.appendChild(div);
-    historyEl.scrollTop = historyEl.scrollHeight;
+    pinIfFollowing();
     body.roleLabel = label;
     return body;
   }
@@ -4415,6 +4540,17 @@ function boot(cfg) {
       el.innerHTML = marked.parse(mdText);
     } catch (e) {
       el.textContent = mdText;
+    }
+    wrapTablesForScrolling(el);
+  }
+  function wrapTablesForScrolling(el) {
+    var tables = el.querySelectorAll("table");
+    for (var i = 0; i < tables.length; i++) {
+      var table = tables[i];
+      var wrap = document.createElement("div");
+      wrap.className = "lmw-table-scroll";
+      table.parentNode.insertBefore(wrap, table);
+      wrap.appendChild(table);
     }
   }
   function roleLabel(role) {
@@ -4453,7 +4589,7 @@ function boot(cfg) {
     chip.dataset.tool = toolCall.name;
     row.appendChild(chip);
     pendingChips.push(chip);
-    historyEl.scrollTop = historyEl.scrollHeight;
+    pinIfFollowing();
   }
   function resolveToolCall(outcome) {
     var idx = pendingChips.findIndex(function(c) {
@@ -4493,7 +4629,7 @@ function boot(cfg) {
     } else {
       historyEl.appendChild(details);
     }
-    historyEl.scrollTop = historyEl.scrollHeight;
+    pinIfFollowing();
     currentThinkingBlock = details;
     currentThinkingBody = body;
     return body;
@@ -4573,13 +4709,13 @@ function boot(cfg) {
       cached: resourceContext,
       endpoint: resourcePlan && resourcePlan.endpoint,
       read: readMcpResource,
-      budgetBytes: RESOURCE_BUDGET_BYTES
+      budgetBytes: resourceBudget()
     });
     resourceContext = turn.cached;
     var page = await pageResourceLinesForTurn({
-      plans: pageResourcePlans,
+      plans: pageResourcePlansNow(),
       resources: handlers.resources,
-      budgetBytes: RESOURCE_BUDGET_BYTES,
+      budgetBytes: resourceBudget(),
       cache: pageResourceCache
     });
     pageResourceCache = page.cache;
@@ -4610,6 +4746,7 @@ function boot(cfg) {
     var userText = inputEl.value.trim();
     if (!userText) return;
     inputEl.value = "";
+    followingOutput = true;
     appendTurn("user", userText, pendingTurnLabel);
     pendingTurnLabel = null;
     if (currentAbort) {
@@ -4646,8 +4783,14 @@ function boot(cfg) {
         hostWideTools,
         aiActions: handlers.tools,
         maxRounds: MAX_ROUNDS,
+        contextWindow: modelWindow,
         provider: LLM_PROVIDER === "ollama" ? "ollama" : "hub",
         signal: currentAbort.signal,
+        onContextEvicted: function(dropped) {
+          var last = dropped[dropped.length - 1];
+          var name = last && last.name ? last.name : "tool";
+          appendTurn("system", "Dropped an earlier " + name + " result to make room in the model's context. Ask again if you need it.");
+        },
         onToolCall: function(toolCall) {
           announceToolCall(toolCall);
           persistConversation();
@@ -4669,7 +4812,7 @@ function boot(cfg) {
           var body = ensureThinkingBlock();
           body.appendChild(document.createTextNode(delta));
           body.scrollTop = body.scrollHeight;
-          historyEl.scrollTop = historyEl.scrollHeight;
+          pinIfFollowing();
         },
         onTextDelta: function(delta) {
           markDone(assistantBody.roleLabel);
@@ -4678,7 +4821,7 @@ function boot(cfg) {
           renderMarkdownInto(assistantBody, assistantMarkdown);
           liveTurn.content = assistantMarkdown;
           persistSoon();
-          historyEl.scrollTop = historyEl.scrollHeight;
+          pinIfFollowing();
         }
       });
       liveTurn.content = result.content;

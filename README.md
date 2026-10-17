@@ -698,8 +698,12 @@ the model's context. The widget reads two optional fields the
   `_meta`; the widget still reads that when `size` is absent, but it will be
   removed, so emit `size`.
   The widget decides whether it can afford the resource *before* fetching it. If
-  the resource is over its budget of 8 KB, the bytes never cross the wire, and
-  the LLM asks for what it needs through your tools instead.
+  the resource is over that budget, the bytes never cross the wire, and the LLM
+  asks for what it needs through your tools instead.
+  The budget is a share of the model's own context window, which the widget
+  reads from the hub: about 8 KB for a 32,000-token model, about 32 KB for a
+  128,000-token one, and at most 64 KB. When the hub does not report a window,
+  the budget is 8 KB.
 - **`volatility`** — `"stable"` (read once, re-used) or `"volatile"` (re-read
   on every turn that uses it).
 - **`autoAttach`** — may the widget put this in the model's context without

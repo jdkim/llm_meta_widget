@@ -22,7 +22,9 @@ import { resourceHints, planResourceAttachment, trimResourceText,
          listMcpPrompts, getMcpPrompt, listMcpResources, readMcpResource,
          promptMessagesToText, readStaticPrimitivesCard, getPagePrompt, planPageResources, pageResourceLinesForTurn, pageResourceLine,
          mergeStaticPrimitivesCards, PAGE_CARD_MEDIA_TYPE,
-         declaredPageGlobal, pageHandlers } from "./orchestrator.js"
+         declaredPageGlobal, pageHandlers,
+         modelWindowFrom, estimateTokens, evictOldToolResults,
+         resourceBudgetBytes, estimateToolsTokens } from "./orchestrator.js"
 
 // --- fixtures --------------------------------------------------------------
 
@@ -2253,4 +2255,274 @@ test("a page that declares no transport is not warned about", () => {
                  legacy: { tools: "aiActions" }, warn: (m) => said.push(m) })
 
   assert.deepEqual(said, [])
+})
+
+// --- budgeting against the model's real window --------------------------
+//
+// A TogoMCP session reached 157,358 tokens against a 131,072-token model: its
+// usage guide alone is 71 KB (~18k tokens) in one tool result, and the loop
+// capped nothing. The hub now refuses such a turn with a clear message; this
+// is the other half, so a long tool-heavy turn degrades instead of ending.
+
+test("modelWindowFrom reads the window of the configured model", () => {
+  const payload = { llms: [
+    { family: "ollama", available_models: [ { value: "local-1", max_input_tokens: 32768 } ] },
+    { family: "bedrock", models: [ { name: "gpt-oss-120b", max_input_tokens: 128000 } ] }
+  ] }
+
+  assert.equal(modelWindowFrom(payload, "gpt-oss-120b"), 128000)
+  assert.equal(modelWindowFrom(payload, "local-1"), 32768)
+})
+
+test("modelWindowFrom looks past the family the picker shows", () => {
+  // The picker lists only the ollama family, while the configured model is
+  // usually hosted — so a scan of that family alone would always find nothing.
+  const payload = { llms: [ { family: "bedrock", models: [ { name: "m", max_input_tokens: 99 } ] } ] }
+
+  assert.equal(modelWindowFrom(payload, "m"), 99)
+})
+
+test("modelWindowFrom says null when the hub does not know", () => {
+  assert.equal(modelWindowFrom({ llms: [ { family: "x", models: [ { name: "m" } ] } ] }, "m"), null)
+  assert.equal(modelWindowFrom({ llms: [ { family: "x", models: [ { name: "m", max_input_tokens: 0 } ] } ] }, "m"), null)
+  assert.equal(modelWindowFrom({}, "m"), null)
+  assert.equal(modelWindowFrom(undefined, "m"), null)
+})
+
+test("estimateTokens counts content and a cost per message", () => {
+  const one = estimateTokens([ { role: "user", content: "x".repeat(400) } ])
+
+  assert.equal(one, 100 + 4)
+  assert.equal(estimateTokens([]), 0)
+})
+
+test("estimateTokens handles a non-string content without throwing", () => {
+  assert.ok(estimateTokens([ { role: "tool", content: { a: 1 } } ]) > 0)
+})
+
+test("eviction drops the oldest tool result and leaves the rest alone", () => {
+  const messages = [
+    { role: "system", content: "rules" },
+    { role: "user", content: "question" },
+    { role: "tool", tool_call_id: "c1", name: "old_tool", content: "x".repeat(400_000) },
+    { role: "assistant", content: "what I made of it" },
+    { role: "tool", tool_call_id: "c2", name: "new_tool", content: "y".repeat(400_000) }
+  ]
+
+  const { messages: out, dropped } = evictOldToolResults({ messages, window: 128_000, reserve: 2048 })
+
+  assert.match(out[2].content, /dropped to make room/)
+  assert.equal(out[4].content.length, 400_000, "the newest result is kept")
+  assert.deepEqual(dropped.map((d) => d.name), [ "old_tool" ])
+  assert.equal(out[0].content, "rules", "the system prompt is untouched")
+  assert.equal(out[1].content, "question", "the question is untouched")
+  assert.equal(out[3].content, "what I made of it", "the model's own summary survives")
+})
+
+test("an evicted result keeps its tool_call_id, because a call needs an answer", () => {
+  // A provider that sees a tool_call with no matching result rejects the whole
+  // request, so eviction replaces the content and never removes the message.
+  const messages = [
+    { role: "tool", tool_call_id: "c1", name: "t", content: "x".repeat(900_000) },
+    { role: "user", content: "go" }
+  ]
+
+  const { messages: out } = evictOldToolResults({ messages, window: 1000, reserve: 0 })
+
+  assert.equal(out.length, 2)
+  assert.equal(out[0].tool_call_id, "c1")
+  assert.equal(out[0].role, "tool")
+})
+
+test("eviction stops as soon as the request fits", () => {
+  const big = () => ({ role: "tool", tool_call_id: "c", name: "t", content: "x".repeat(40_000) })
+  const messages = [ big(), big(), big(), { role: "user", content: "go" } ]
+
+  // 3 x ~10k tokens against a 25k budget: shedding the first ~10k is already
+  // enough, so the second and third must survive. The cheap implementation —
+  // drop every tool result whenever the turn is too big — passes a "does it
+  // fit now" test and fails this one.
+  const { messages: out, dropped } = evictOldToolResults({ messages, window: 25_000, reserve: 0 })
+
+  assert.equal(dropped.length, 1)
+  assert.equal(out[1].content.length, 40_000)
+  assert.equal(out[2].content.length, 40_000)
+})
+
+test("nothing is evicted when the turn already fits", () => {
+  const messages = [ { role: "tool", tool_call_id: "c", name: "t", content: "small" } ]
+  const { messages: out, dropped } = evictOldToolResults({ messages, window: 128_000 })
+
+  assert.equal(out, messages, "the same array, so the caller can tell nothing happened")
+  assert.deepEqual(dropped, [])
+})
+
+test("nothing is evicted when the window is unknown", () => {
+  // Guessing a window is worse than not budgeting: too low throws away context
+  // the turn needed, too high fails at the provider anyway.
+  const messages = [ { role: "tool", tool_call_id: "c", name: "t", content: "x".repeat(900_000) } ]
+
+  assert.equal(evictOldToolResults({ messages, window: null }).messages, messages)
+  assert.equal(evictOldToolResults({ messages, window: 0 }).messages, messages)
+})
+
+test("an already-dropped result is not dropped again", () => {
+  const messages = [
+    { role: "tool", tool_call_id: "c1", name: "t", content: "[dropped to make room in the context window.]" },
+    { role: "tool", tool_call_id: "c2", name: "t2", content: "x".repeat(400_000) }
+  ]
+
+  const { dropped } = evictOldToolResults({ messages, window: 1000, reserve: 0 })
+
+  assert.deepEqual(dropped.map((d) => d.name), [ "t2" ])
+})
+
+test("room is kept for the answer, not just for the request", () => {
+  // ~7k tokens against a 10k window fits — and leaves 3k to generate into,
+  // which a long answer overruns. The reserve is what makes this evict, so a
+  // budget of `window` alone passes every other test here and fails this one.
+  const messages = [
+    { role: "tool", tool_call_id: "c1", name: "old", content: "x".repeat(20_000) },
+    { role: "user", content: "go" }
+  ]
+
+  const fits = evictOldToolResults({ messages, window: 10_000, reserve: 0 })
+  assert.deepEqual(fits.dropped, [], "no reserve, no need to drop anything")
+
+  const reserved = evictOldToolResults({ messages, window: 10_000, reserve: 5_000 })
+  assert.deepEqual(reserved.dropped.map((d) => d.name), [ "old" ])
+})
+
+test("the resource budget is the old constant at the window it was chosen for", () => {
+  // 8000 bytes was picked as "~2k tokens on a 32k local model". If the share
+  // is ever retuned, this says what the old behaviour was.
+  assert.equal(resourceBudgetBytes(32_768), 8192)
+})
+
+test("a bigger model may attach more of its reference material", () => {
+  assert.equal(resourceBudgetBytes(128_000), 32_000)
+})
+
+test("the budget never drops below the old fixed value", () => {
+  // A small window must not make the widget attach less than it always did:
+  // below the floor a resource stops being useful at all.
+  assert.equal(resourceBudgetBytes(8_000), 8000)
+  assert.equal(resourceBudgetBytes(null), 8000)
+  assert.equal(resourceBudgetBytes(undefined), 8000)
+})
+
+test("the budget is capped, because these bytes are fetched every turn", () => {
+  // The largest real catalog is ~35 KB, so a 1M-token model gains nothing from
+  // a 250 KB allowance.
+  assert.equal(resourceBudgetBytes(1_000_000), 64_000)
+})
+
+test("runChatLoop applies the window to the messages it sends", async () => {
+  // Drives the loop itself, not just the pure helper: an earlier tool result
+  // of ~4000 tokens against a 3000-token model must not be sent whole.
+  const history = { role: "tool", tool_call_id: "c0", name: "earlier", content: "z".repeat(16_000) }
+  const { calls } = await withFetch(
+    [ { matches: (u) => u.includes("/single_llm_calls"), respond: () => sseResponse(sseDoneOnly("ok")) } ],
+    () => runChatLoop({ ...BASE_OPTS, contextWindow: 3_000,
+                        messages: [ history, { role: "user", content: "hi" } ] })
+  )
+
+  const sent = calls[0].body.messages.filter((m) => m.role === "tool")
+  assert.match(sent[0].content, /dropped to make room/)
+  assert.equal(calls[0].body.messages.find((m) => m.role === "user").content, "hi", "the question stays")
+})
+
+test("runChatLoop does no budgeting at all when no window is given", async () => {
+  // Asserts the DEFAULT, which no fixture can do by size alone: a loop whose
+  // default window were some large number would still send a big turn whole,
+  // and look identical. So count the work instead — estimating a turn reads
+  // every message's content, and a loop with no window must not estimate.
+  //
+  // Both runs serialise the same body for the request, so the difference in
+  // reads is the estimation and nothing else.
+  const spyMessages = () => {
+    const state = { reads: 0 }
+    const msg = { role: "tool", tool_call_id: "c0", name: "earlier",
+                  get content() { state.reads++; return "z".repeat(4_000) } }
+    return [ state, [ msg, { role: "user", content: "hi" } ] ]
+  }
+  const route = [ { matches: (u) => u.includes("/single_llm_calls"), respond: () => sseResponse(sseDoneOnly("ok")) } ]
+
+  const [ without, msgsA ] = spyMessages()
+  await withFetch(route, () => runChatLoop({ ...BASE_OPTS, messages: msgsA }))
+
+  const [ withWindow, msgsB ] = spyMessages()
+  await withFetch(route, () => runChatLoop({ ...BASE_OPTS, contextWindow: 10_000, messages: msgsB }))
+
+  assert.ok(withWindow.reads > without.reads,
+    "a loop given a window must estimate the turn; one given none must not")
+})
+
+test("runChatLoop with no window given evicts nothing, however long the turn", async () => {
+  // The default must be "no window", not a large invented one: a host that
+  // embeds the loop directly and never passes contextWindow would otherwise
+  // have its context silently thinned.
+  const huge = { role: "tool", tool_call_id: "c0", name: "earlier", content: "z".repeat(4_000_000) }
+  const { calls } = await withFetch(
+    [ { matches: (u) => u.includes("/single_llm_calls"), respond: () => sseResponse(sseDoneOnly("ok")) } ],
+    () => runChatLoop({ ...BASE_OPTS, messages: [ huge, { role: "user", content: "hi" } ] })
+  )
+
+  const sent = calls[0].body.messages.filter((m) => m.role === "tool")
+  assert.equal(sent[0].content.length, 4_000_000, "nothing may be dropped without a window")
+})
+
+test("runChatLoop holds tokens back for the answer by default", async () => {
+  // ~4000 tokens of history against a 4600-token window: it fits the window,
+  // and does not fit once room is kept for the answer. With the default
+  // reserve at zero this turn is sent whole and the model has nothing to
+  // generate into.
+  const history = { role: "tool", tool_call_id: "c0", name: "earlier", content: "z".repeat(16_000) }
+  const { calls } = await withFetch(
+    [ { matches: (u) => u.includes("/single_llm_calls"), respond: () => sseResponse(sseDoneOnly("ok")) } ],
+    () => runChatLoop({ ...BASE_OPTS, contextWindow: 4_600,
+                        messages: [ history, { role: "user", content: "hi" } ] })
+  )
+
+  const sent = calls[0].body.messages.filter((m) => m.role === "tool")
+  assert.match(sent[0].content, /dropped to make room/)
+})
+
+test("estimateToolsTokens prices names, descriptions and schemas", () => {
+  const tools = [ { name: "a", description: "d".repeat(400), input_schema: { type: "object" } } ]
+
+  assert.ok(estimateToolsTokens(tools) > 100, "a 400-character description is ~100 tokens")
+  assert.equal(estimateToolsTokens([]), 0)
+  assert.equal(estimateToolsTokens(undefined), 0)
+})
+
+test("estimateToolsTokens reads either spelling of the schema field", () => {
+  // The wire uses input_schema; a page card and the MCP spec use inputSchema.
+  const snake = estimateToolsTokens([ { name: "a", input_schema: { x: "y".repeat(200) } } ])
+  const camel = estimateToolsTokens([ { name: "a", inputSchema: { x: "y".repeat(200) } } ])
+
+  assert.equal(snake, camel)
+  assert.ok(snake > 40)
+})
+
+test("runChatLoop counts the declared tools against the window", async () => {
+  // The messages alone fit the window; the tool schemas are what overrun it.
+  // A budget that counts only messages sends this turn whole and the provider
+  // refuses it — which is the failure this whole change exists to prevent.
+  // ~5,000 tokens of messages and ~5,250 of tool schemas. The messages alone
+  // fit a 9,000-token window; together they do not.
+  const history = { role: "tool", tool_call_id: "c0", name: "earlier", content: "z".repeat(20_000) }
+  const fatTools = Array.from({ length: 20 }, (_, i) => ({
+    name: "tool_" + i, description: "d".repeat(1_000), input_schema: { type: "object" }
+  }))
+  const { calls } = await withFetch(
+    [ { matches: (u) => u.includes("/single_llm_calls"), respond: () => sseResponse(sseDoneOnly("ok")) } ],
+    () => runChatLoop({ ...BASE_OPTS, contextWindow: 9_000, outputReserve: 0,
+                        messages: [ history, { role: "user", content: "hi" } ],
+                        remoteTools: fatTools })
+  )
+
+  const sent = calls[0].body.messages.filter((m) => m.role === "tool")
+  assert.match(sent[0].content, /dropped to make room/,
+    "5,000 tokens of messages plus 5,250 of tool schemas does not fit 9,000")
 })

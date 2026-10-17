@@ -3,6 +3,65 @@
 This file starts at 0.8.0, the first release with a breaking change worth
 calling out. Earlier releases are in the git history (`git log --oneline v0.7.6`).
 
+## Unreleased
+
+### Fixed: the panel can be read while a turn is still running
+
+Adding content mid-turn always scrolled the panel back to the end — a tool
+chip, a thinking block, or any delta. On a short answer nobody notices. On a
+long tool-using turn the deltas keep coming for minutes, so scrolling back
+through the answer was impossible by any means: wheel, trackpad and keyboard
+all appeared dead, because each attempt was undone within milliseconds.
+
+The panel now follows the output only while the reader is at the end of it.
+Scroll away and it leaves you alone; come back to the end and it resumes.
+Asking a new question always returns you to the end, and a conversation
+restored after a page load still opens at its end.
+
+### Fixed: a wide table is readable instead of one letter per column
+
+A markdown table was itself the scrolling box (`display: block;
+overflow-x: auto`), so it was capped at the bubble width, squeezed its columns,
+and `word-wrap: break-word` then broke every word one character per line. A
+six-column table of genomic notation became a column of single letters. Tables
+now sit in a wrapper that scrolls sideways while the table keeps its natural
+width: the same answer went from 3,155px to 1,426px of message height in
+Chromium, and the columns are readable.
+
+
+### Added: a turn is sized against the model's real context window
+
+The widget now reads each model's context window from the hub (`/api/llms`
+reports `max_input_tokens`) and uses it for two decisions it used to make from
+fixed guesses.
+
+**Old tool results are given up rather than letting the round be refused.**
+When the next round would not fit, the oldest tool results are replaced — one
+at a time, stopping as soon as the round fits — with a short note saying the
+result was dropped and may be fetched again. Nothing else is touched: not the
+system prompt, not the questions, and not what the assistant said about those
+results, so the model keeps its own summary of what it read. The panel says
+which tool's result went, so a thinner context is visible rather than silent.
+
+A tool message is replaced, never removed, because a provider rejects a
+`tool_call` that has no matching result.
+
+The declared tools are counted too, not only the messages. Their names,
+descriptions and schemas are part of every request — around twenty tools is a
+few thousand tokens before the conversation starts — so a budget that counted
+messages alone would evict too late to help.
+
+**The reference-resource budget scales with the window.** It was a fixed 8 KB
+whatever the model. It is now about 6% of the window — the same share 8 KB was
+of the 32,000-token model it was chosen for — so a 128,000-token model may
+attach about 32 KB, up to a 64 KB cap. A model whose window the hub does not
+report keeps the old 8 KB.
+
+Nothing changes for a host that does not want this: there is no new attribute,
+and a hub that does not report a window makes the widget behave exactly as
+before. It is a release of llm_meta_server, not the widget, that turns the
+behaviour on.
+
 ## 0.11.1
 
 ### Fixed: a page action that navigates no longer loses the turn
