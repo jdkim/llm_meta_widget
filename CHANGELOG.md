@@ -3,6 +3,35 @@
 This file starts at 0.8.0, the first release with a breaking change worth
 calling out. Earlier releases are in the git history (`git log --oneline v0.7.6`).
 
+## Unreleased
+
+### Fixed: a tool result is counted as JSON, not as prose
+
+The turn was sized at roughly four characters per token, which is right for
+prose and badly wrong for a tool result. A request of 289,101 characters that
+the provider counted as 135,291 tokens was estimated at 72,275 — 53% of its
+real size — so nothing was given up and the provider refused the turn with its
+own error text. That request was 33% letters, 16% digits and 45% punctuation:
+JSON, which tokenizes about twice as densely as prose.
+
+Characters are now counted in three classes — letters and spaces, CJK, and
+everything else — which puts that request at 106% of its real size. Erring
+high is deliberate here: underestimating ends the turn, while overestimating
+gives up an old tool result slightly early. Tool schemas are counted the same
+way, since a schema is JSON too.
+
+### Fixed: following the output no longer fights a reader who scrolls
+
+0.12.0 decided whether to follow the output from the `scroll` event. A browser
+dispatches that event a frame after the position changes, while deltas arrive
+every few milliseconds, so a delta could pin the view before the listener
+heard that the reader had moved — and the pin put them back at the end, so the
+decision never flipped. The question is now asked synchronously, immediately
+before anything is added, which has no such window.
+
+A separate report of the panel jumping to the TOP after a turn ends is not
+explained by this and remains open.
+
 ## 0.12.0
 
 Nothing a page must provide changes in this release: no new attribute, no

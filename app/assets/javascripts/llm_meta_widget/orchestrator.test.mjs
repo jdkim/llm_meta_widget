@@ -24,7 +24,8 @@ import { resourceHints, planResourceAttachment, trimResourceText,
          mergeStaticPrimitivesCards, PAGE_CARD_MEDIA_TYPE,
          declaredPageGlobal, pageHandlers,
          modelWindowFrom, estimateTokens, evictOldToolResults,
-         resourceBudgetBytes, estimateToolsTokens } from "./orchestrator.js"
+         resourceBudgetBytes, estimateToolsTokens,
+         estimateTextTokens } from "./orchestrator.js"
 
 // --- fixtures --------------------------------------------------------------
 
@@ -2290,10 +2291,50 @@ test("modelWindowFrom says null when the hub does not know", () => {
 })
 
 test("estimateTokens counts content and a cost per message", () => {
+  // "x" is a letter, so this is the prose class: 400 / 3.5.
   const one = estimateTokens([ { role: "user", content: "x".repeat(400) } ])
 
-  assert.equal(one, 100 + 4)
+  assert.equal(one, Math.ceil(400 / 3.5) + 4)
   assert.equal(estimateTokens([]), 0)
+})
+
+test("a tool result costs far more per character than prose", () => {
+  // The failure this exists to prevent (2026-10-17): a 289,101-character
+  // request that the provider counted as 135,291 tokens — 2.14 characters per
+  // token — was estimated at 72,275 by a flat four-per-token rule, so nothing
+  // was evicted and the provider refused the turn.
+  const prose = "the quick brown fox jumps over the lazy dog ".repeat(100)
+  const json  = '{"rsID":"rs28929474","pos":94378610,"ref":"C","alt":"T","af":0.0047},'.repeat(64)
+
+  const proseRatio = prose.length / estimateTextTokens(prose)
+  const jsonRatio  = json.length / estimateTextTokens(json)
+
+  assert.ok(proseRatio > 3, `prose should be ~3.5 chars/token, got ${proseRatio.toFixed(2)}`)
+  assert.ok(jsonRatio < 2.2, `a tool result should be under ~2.2 chars/token, got ${jsonRatio.toFixed(2)}`)
+})
+
+test("the estimate of a real refused request is at or above its true size", () => {
+  // Rebuilt to the measured composition of that request: 33% letters,
+  // 6% spaces, 16% digits, 45% punctuation, 289,101 characters, which the
+  // provider counted as 135,291 tokens. Anything BELOW that is the bug
+  // returning; a little above is the intended safety margin.
+  const unit = "abcdefghijklmnopqrstuvwxyzabcdefg" +   // 33 letters
+               "      " +                              //  6 spaces
+               "0123456789012345" +                    // 16 digits
+               '{"":,}[]()<>-_.:;/|@#$%^&*+=~?!\'\\`' +
+               '{}[](),.:;"' // 45 punctuation in all: the unit is 100 chars
+  const sample = unit.repeat(Math.ceil(289_101 / unit.length)).slice(0, 289_101)
+
+  // The fixture is only worth anything if it still looks like that request.
+  const letters = (sample.match(/[A-Za-z]/g) || []).length
+  const digits  = (sample.match(/[0-9]/g) || []).length
+  assert.ok(Math.abs(letters / sample.length - 0.33) < 0.04, "letters should be ~33%")
+  assert.ok(Math.abs(digits / sample.length - 0.16) < 0.04, "digits should be ~16%")
+
+  const estimate = estimateTextTokens(sample)
+
+  assert.ok(estimate >= 135_291, `must not underestimate: got ${estimate}`)
+  assert.ok(estimate <= 135_291 * 1.3, `and must not wildly overestimate: got ${estimate}`)
 })
 
 test("estimateTokens handles a non-string content without throwing", () => {
@@ -2494,6 +2535,24 @@ test("estimateToolsTokens prices names, descriptions and schemas", () => {
   assert.ok(estimateToolsTokens(tools) > 100, "a 400-character description is ~100 tokens")
   assert.equal(estimateToolsTokens([]), 0)
   assert.equal(estimateToolsTokens(undefined), 0)
+})
+
+test("a tool schema is priced as JSON, not as prose", () => {
+  // A schema is punctuation and short keys — the dense case. Pricing it as
+  // prose understates what every turn carries before a word is said: TogoMCP
+  // declares around twenty of these.
+  const schema = { type: "object", properties: {
+    query: { type: "string", description: "x" },
+    limit: { type: "integer", minimum: 1, maximum: 100 },
+    fields: { type: "array", items: { type: "string" } }
+  }, required: [ "query" ] }
+  const tools = [ { name: "s", description: "", input_schema: schema } ]
+  const serialised = JSON.stringify({ name: "s", description: "", schema })
+
+  const tokens = estimateToolsTokens(tools)
+
+  assert.ok(tokens > Math.ceil(serialised.length / 3),
+    `a schema should cost more than a flat prose rate: ${tokens} for ${serialised.length} chars`)
 })
 
 test("estimateToolsTokens reads either spelling of the schema field", () => {

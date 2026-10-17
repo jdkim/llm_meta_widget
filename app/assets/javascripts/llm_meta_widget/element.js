@@ -168,15 +168,11 @@ function boot(cfg) {
   	// The reader's own scrolling says which they are doing: leave the bottom
   	// and we stop following; come back to it and we resume.
   	var SCROLL_PIN_SLACK = 40;   // px from the end still counts as "at the end"
-  	var followingOutput  = true;
 
   	function atBottom() {
   		return historyEl.scrollHeight - historyEl.scrollTop - historyEl.clientHeight <= SCROLL_PIN_SLACK;
   	}
   	function pinToBottom() { historyEl.scrollTop = historyEl.scrollHeight; }
-  	// Called wherever content is added mid-turn.
-  	function pinIfFollowing() { if (followingOutput) pinToBottom(); }
-  	historyEl.addEventListener("scroll", function() { followingOutput = atBottom(); });
   	var formEl       = root.querySelector(".lmw-form");
   	var inputEl      = root.querySelector(".lmw-input");
   	var clearBtn     = root.querySelector(".lmw-clear");
@@ -935,6 +931,8 @@ function boot(cfg) {
   	var pendingTurnLabel = null;
 
   	function appendTurn(role, text, turnLabel) {
+  		// Captured BEFORE anything is added: see atBottom.
+  		var following = atBottom();   // a question always wins
   		// Class names mirror llm_meta_chat's chats/_message.html.erb —
   		// `.message.<role>`, `.message-role`, `.message-content` — so the
   		// shared conversation.css styles apply directly (see the <link>
@@ -973,7 +971,9 @@ function boot(cfg) {
   		div.appendChild(document.createTextNode(" "));
   		div.appendChild(body);
   		historyEl.appendChild(div);
-  		pinIfFollowing();
+  		// A question the visitor just asked always goes to the end; anything
+  		// else respects where they were reading.
+  		if (role === "user" || following) pinToBottom();
   		body.roleLabel = label;   // so a turn in flight can show it is working
   		return body;
   	}
@@ -1061,6 +1061,8 @@ function boot(cfg) {
   	}
 
   	function announceToolCall(toolCall) {
+  		// Captured BEFORE anything is added: see atBottom.
+  		var following = atBottom();
   		var row = chipRow();
   		if (!row) return;
   		var chip = document.createElement("span");
@@ -1069,7 +1071,7 @@ function boot(cfg) {
   		chip.dataset.tool = toolCall.name;
   		row.appendChild(chip);
   		pendingChips.push(chip);
-  		pinIfFollowing();
+  		if (following) pinToBottom();
   	}
 
   	function resolveToolCall(outcome) {
@@ -1091,6 +1093,8 @@ function boot(cfg) {
   	var activeAssistantBody  = null;
 
   	function ensureThinkingBlock() {
+  		// Captured BEFORE anything is added: see atBottom.
+  		var following = atBottom();
   		if (currentThinkingBody) return currentThinkingBody;
   		// Class names match llm_meta_chat's .message-thinking pattern so
   		// the shared conversation.css applies directly.
@@ -1117,7 +1121,7 @@ function boot(cfg) {
   		} else {
   			historyEl.appendChild(details);
   		}
-  		pinIfFollowing();
+  		if (following) pinToBottom();
   		currentThinkingBlock = details;
   		currentThinkingBody  = body;
   		return body;
@@ -1266,9 +1270,6 @@ function boot(cfg) {
   		var userText = inputEl.value.trim();
   		if (!userText) return;
   		inputEl.value = "";
-  		// Asking something is a request to see the answer: whatever the reader was
-  		// looking at before, they are following the output again from here.
-  		followingOutput = true;
   		appendTurn("user", userText, pendingTurnLabel);
   		pendingTurnLabel = null;
 
@@ -1356,19 +1357,23 @@ function boot(cfg) {
   					collapseThinkingBlock();
   				},
   				onThinkingDelta: function(delta) {
+  					// Captured BEFORE anything is added: see atBottom.
+  					var following = atBottom();
   					var body = ensureThinkingBlock();
   					body.appendChild(document.createTextNode(delta));
   					body.scrollTop = body.scrollHeight;
-  					pinIfFollowing();
+  					if (following) pinToBottom();
   				},
   				onTextDelta: function(delta) {
+  					// Captured BEFORE anything is added: see atBottom.
+  					var following = atBottom();
   					markDone(assistantBody.roleLabel);
   					collapseThinkingBlock();
   					assistantMarkdown += delta;
   					renderMarkdownInto(assistantBody, assistantMarkdown);
   					liveTurn.content = assistantMarkdown;
   					persistSoon();
-  					pinIfFollowing();
+  					if (following) pinToBottom();
   				}
   			});
   			// The turn was recorded here until 0.11.1, after the loop returned — which

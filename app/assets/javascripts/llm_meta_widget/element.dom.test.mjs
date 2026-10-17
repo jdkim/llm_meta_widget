@@ -1192,31 +1192,40 @@ test("re-rendering a turn does not nest one table scroller inside another", asyn
 // reads as "at the bottom". These give the scroller a geometry so the
 // distinction between following and reading back can exist at all.
 
-function giveGeometry(el, { clientHeight, scrollHeight }) {
-  Object.defineProperty(el, "clientHeight", { value: clientHeight, configurable: true })
-  Object.defineProperty(el, "scrollHeight", { value: scrollHeight, configurable: true })
+function giveGeometry(el, { clientHeight, scrollHeight, growBy = 0 }) {
   let top = 0
+  // Real layout GROWS as content arrives, and it does so SYNCHRONOUSLY: by the
+  // time a handler pins, the new content is already measured. Deriving the
+  // height from the text does the same here. A fixed height, or one grown from
+  // a MutationObserver (a microtask, so it lands too late), gives the same
+  // answer before and after a change — and then measuring at the wrong moment
+  // costs nothing, which is how the first fix passed its tests and shipped
+  // broken.
+  const height = () => scrollHeight + (growBy ? (el.textContent || "").length * growBy : 0)
+  Object.defineProperty(el, "clientHeight", { value: clientHeight, configurable: true })
+  Object.defineProperty(el, "scrollHeight", { get: height, configurable: true })
   Object.defineProperty(el, "scrollTop", {
     get: () => top,
-    set: (v) => { top = Math.min(v, scrollHeight - clientHeight) },
+    set: (v) => { top = Math.max(0, Math.min(v, height() - clientHeight)) },
     configurable: true
   })
 }
 
-async function streamingPanelScrolledUp() {
+async function streamingPanelScrolledUp({ growBy = 0, bigDeltas = false } = {}) {
   hubLlms = { llms: [ { family: "ollama", available_models: [ { value: "m1", label: "m1" } ] } ] }
   // Chunked on purpose: the scroll has to happen while deltas are still
   // arriving, which is the only moment the old code could yank the view.
-  streamScript = [ { gap: 70, parts: [
-    'event: text_delta\ndata: {"delta":"first part. "}\n\n',
-    'event: text_delta\ndata: {"delta":"second part. "}\n\n',
-    'event: text_delta\ndata: {"delta":"third part. "}\n\n',
-    'event: text_delta\ndata: {"delta":"fourth part. "}\n\n',
-    'event: done\ndata: {"content":"all of it","finish_reason":"stop"}\n\n'
-  ] } ]
+  streamScript = [ { gap: 70, parts: (bigDeltas
+    ? [ 1, 2, 3, 4 ].map((n) => 'event: text_delta\ndata: ' +
+        JSON.stringify({ delta: "| col | col | col |\\n".repeat(40) + " part " + n + " " }) + '\n\n')
+    : [ 'event: text_delta\ndata: {"delta":"first part. "}\n\n',
+        'event: text_delta\ndata: {"delta":"second part. "}\n\n',
+        'event: text_delta\ndata: {"delta":"third part. "}\n\n',
+        'event: text_delta\ndata: {"delta":"fourth part. "}\n\n' ]
+  ).concat([ 'event: done\ndata: {"content":"all of it","finish_reason":"stop"}\n\n' ]) } ]
   const panel = await mount()
   const msgs = panel.querySelector(".lmw-messages")
-  giveGeometry(msgs, { clientHeight: 450, scrollHeight: 1049 })
+  giveGeometry(msgs, { clientHeight: 450, scrollHeight: 1049, growBy })
   return { panel, msgs }
 }
 
@@ -1239,16 +1248,25 @@ test("a reader who scrolled up is not dragged back by streaming output", async (
   assert.equal(msgs.scrollTop, 100, "the view must stay where the reader put it")
 })
 
-test("a reader at the end still follows the output", async () => {
-  const { panel, msgs } = await streamingPanelScrolledUp()
-  msgs.scrollTop = 599                                   // 1049 - 450, the end
-  msgs.dispatchEvent(new window.Event("scroll"))
+test("a reader at the end still follows the output as it grows", async () => {
+  // The panel grows while the turn streams, so following means the view moves
+  // WITH the end — not that it stays at one number. Measuring after a change
+  // instead of before makes the reader look like they fell behind, and the
+  // panel quietly stops following them.
+  // ~0.3px per character, roughly what wrapped text costs. A bigger figure
+  // makes even a label change blow past SCROLL_PIN_SLACK, which no real layout
+  // does; a much smaller one keeps every delta inside the slack, where the
+  // timing of the check cannot matter. The deltas below are table-sized, which
+  // is when it does.
+  const { panel, msgs } = await streamingPanelScrolledUp({ growBy: 0.3, bigDeltas: true })
+  msgs.scrollTop = msgs.scrollHeight                     // the end, whatever it is now
 
   panel.querySelector("textarea").value = "go"
   panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
-  await tick(200)
+  await tick(600)
 
-  assert.equal(msgs.scrollTop, 599, "following means staying at the end")
+  assert.ok(msgs.scrollHeight > 1049, "the panel should have grown as it streamed")
+  assert.equal(msgs.scrollTop, msgs.scrollHeight - 450, "the view must still be at the end")
 })
 
 test("a reader a few pixels short of the end still follows", async () => {
@@ -1384,4 +1402,34 @@ test("a system notice appearing mid-turn does not drag the reader", async () => 
 
   assert.match(panel.textContent, /Dropped an earlier big_tool result/, "the notice must have appeared")
   assert.equal(msgs.scrollTop, 160, "a system notice must not pin the view")
+})
+
+test("a reader who scrolls is not re-pinned before the scroll event arrives", async () => {
+  // The race the first fix missed. A browser dispatches `scroll` a frame AFTER
+  // the position changes, while deltas arrive every few milliseconds — so a
+  // delta can pin the view before the listener learns the reader moved, and
+  // the pin then makes atBottom() true again, so the flag never flips.
+  //
+  // Here the scroll position changes with NO event dispatched, exactly as in
+  // the window between a real scroll and its event.
+  hubLlms = { llms: [ { family: "ollama", available_models: [ { value: "m1", label: "m1" } ] } ] }
+  streamScript = [ { gap: 70, parts: [
+    'event: text_delta\ndata: {"delta":"first. "}\n\n',
+    'event: text_delta\ndata: {"delta":"second. "}\n\n',
+    'event: text_delta\ndata: {"delta":"third. "}\n\n',
+    'event: text_delta\ndata: {"delta":"fourth. "}\n\n',
+    'event: done\ndata: {"content":"all","finish_reason":"stop"}\n\n'
+  ] } ]
+  const panel = await mount()
+  const msgs = panel.querySelector(".lmw-messages")
+  giveGeometry(msgs, { clientHeight: 450, scrollHeight: 1049 })
+
+  panel.querySelector("textarea").value = "go"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(100)
+  msgs.scrollTop = 100              // the reader scrolls; the event has not fired yet
+  await tick(400)                   // more deltas land in the meantime
+
+  assert.match(panel.textContent, /fourth/, "the rest of the turn must have streamed in")
+  assert.equal(msgs.scrollTop, 100, "the view must stay where the reader put it")
 })

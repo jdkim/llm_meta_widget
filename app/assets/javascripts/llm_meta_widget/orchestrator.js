@@ -937,23 +937,53 @@ export const PAGE_CARD_MEDIA_TYPE = "application/mcp-static-primitives+json"
 // is already generous and a 1M-token model does not need 250 KB of it.
 export const RESOURCE_SHARE_OF_WINDOW = 0.0625
 
+// Bytes per token for SIZING that budget — not the estimator above, which
+// measures real text. Kept at four so the budget stays exactly what it was
+// (8 KB on a 32k model): how many tokens those bytes become depends on the
+// resource, and re-sizing budgets is not this constant's job.
+export const RESOURCE_BYTES_PER_TOKEN = 4
+
 export function resourceBudgetBytes(window, { floor = 8000, cap = 64_000 } = {}) {
   if (!window || !Number.isFinite(window)) return floor
-  const share = Math.round(window * RESOURCE_SHARE_OF_WINDOW * CHARS_PER_TOKEN)
+  const share = Math.round(window * RESOURCE_SHARE_OF_WINDOW * RESOURCE_BYTES_PER_TOKEN)
   return Math.min(cap, Math.max(floor, share))
 }
 
-// A rough token count, the same shape the hub's own estimator uses: characters
-// over four, plus a fixed cost per message. Deliberately approximate — it is
-// used to decide "drop the oldest tool result", never to fill the window
-// exactly, and it errs high so the decision is made early rather than late.
-export const CHARS_PER_TOKEN = 4
+// A rough token count, the same three classes the hub's estimator uses.
+//
+// One ratio cannot describe both prose and a tool result. Letters and spaces
+// tokenize at roughly 3.5 characters each; digits, punctuation and symbols go
+// much denser, and a JSON tool result is mostly those.
+//
+// Measured against a real refusal (2026-10-17): a 289,101-character request
+// the provider counted as 135,291 tokens was 33% letters, 16% digits and 45%
+// punctuation. At a flat four characters per token that is 72,275 — 53% of the
+// truth — so nothing was evicted and the provider refused the turn instead.
+// These classes put it at 106%: high, which is the safe direction here, since
+// underestimating means the turn dies while overestimating only gives up an
+// old tool result slightly early.
+export const PROSE_CHARS_PER_TOKEN = 3.5
+export const DENSE_CHARS_PER_TOKEN = 1.6
+export const CJK_CHARS_PER_TOKEN = 1
 export const MESSAGE_OVERHEAD_TOKENS = 4
+
+const CJK_PATTERN = /[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]/g
+const PROSE_PATTERN = /[A-Za-z \n\t]/g
+
+export function estimateTextTokens(text) {
+  const str = typeof text === "string" ? text : String(text ?? "")
+  const cjk = (str.match(CJK_PATTERN) || []).length
+  const prose = (str.match(PROSE_PATTERN) || []).length
+  const dense = str.length - cjk - prose
+  return Math.ceil(cjk / CJK_CHARS_PER_TOKEN +
+                   prose / PROSE_CHARS_PER_TOKEN +
+                   dense / DENSE_CHARS_PER_TOKEN)
+}
 
 export function estimateTokens(messages) {
   return (messages || []).reduce((sum, m) => {
     const content = typeof m?.content === "string" ? m.content : JSON.stringify(m?.content ?? "")
-    return sum + Math.ceil(content.length / CHARS_PER_TOKEN) + MESSAGE_OVERHEAD_TOKENS
+    return sum + estimateTextTokens(content) + MESSAGE_OVERHEAD_TOKENS
   }, 0)
 }
 
@@ -969,7 +999,8 @@ export function estimateToolsTokens(tools) {
   const text = (tools || []).map((t) => JSON.stringify({
     name: t?.name, description: t?.description, schema: t?.input_schema || t?.inputSchema
   })).join("")
-  return Math.ceil(text.length / CHARS_PER_TOKEN)
+  // Counted with the same classes: a schema is JSON, which is the dense case.
+  return estimateTextTokens(text)
 }
 
 // Makes room for the next round by dropping the OLDEST tool results, which is

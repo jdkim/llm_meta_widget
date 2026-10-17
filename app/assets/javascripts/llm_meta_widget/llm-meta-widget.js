@@ -589,17 +589,29 @@ function parseSseFrame(raw) {
 var STATIC_PRIMITIVES_META = "io.modelcontextprotocol/static-primitives";
 var PAGE_CARD_MEDIA_TYPE = "application/mcp-static-primitives+json";
 var RESOURCE_SHARE_OF_WINDOW = 0.0625;
+var RESOURCE_BYTES_PER_TOKEN = 4;
 function resourceBudgetBytes(window2, { floor = 8e3, cap = 64e3 } = {}) {
   if (!window2 || !Number.isFinite(window2)) return floor;
-  const share = Math.round(window2 * RESOURCE_SHARE_OF_WINDOW * CHARS_PER_TOKEN);
+  const share = Math.round(window2 * RESOURCE_SHARE_OF_WINDOW * RESOURCE_BYTES_PER_TOKEN);
   return Math.min(cap, Math.max(floor, share));
 }
-var CHARS_PER_TOKEN = 4;
+var PROSE_CHARS_PER_TOKEN = 3.5;
+var DENSE_CHARS_PER_TOKEN = 1.6;
+var CJK_CHARS_PER_TOKEN = 1;
 var MESSAGE_OVERHEAD_TOKENS = 4;
+var CJK_PATTERN = /[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]/g;
+var PROSE_PATTERN = /[A-Za-z \n\t]/g;
+function estimateTextTokens(text) {
+  const str = typeof text === "string" ? text : String(text ?? "");
+  const cjk = (str.match(CJK_PATTERN) || []).length;
+  const prose = (str.match(PROSE_PATTERN) || []).length;
+  const dense = str.length - cjk - prose;
+  return Math.ceil(cjk / CJK_CHARS_PER_TOKEN + prose / PROSE_CHARS_PER_TOKEN + dense / DENSE_CHARS_PER_TOKEN);
+}
 function estimateTokens(messages) {
   return (messages || []).reduce((sum, m) => {
     const content = typeof m?.content === "string" ? m.content : JSON.stringify(m?.content ?? "");
-    return sum + Math.ceil(content.length / CHARS_PER_TOKEN) + MESSAGE_OVERHEAD_TOKENS;
+    return sum + estimateTextTokens(content) + MESSAGE_OVERHEAD_TOKENS;
   }, 0);
 }
 function estimateToolsTokens(tools) {
@@ -608,7 +620,7 @@ function estimateToolsTokens(tools) {
     description: t?.description,
     schema: t?.input_schema || t?.inputSchema
   })).join("");
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
+  return estimateTextTokens(text);
 }
 function evictOldToolResults({ messages, window: window2, reserve = 0, dropped = [] }) {
   if (!window2 || !Number.isFinite(window2)) return { messages, dropped };
@@ -3940,19 +3952,12 @@ function boot(cfg) {
   var toggleBtn = document.getElementById("llm-meta-widget-toggle");
   var historyEl = root.querySelector(".lmw-messages");
   var SCROLL_PIN_SLACK = 40;
-  var followingOutput = true;
   function atBottom() {
     return historyEl.scrollHeight - historyEl.scrollTop - historyEl.clientHeight <= SCROLL_PIN_SLACK;
   }
   function pinToBottom() {
     historyEl.scrollTop = historyEl.scrollHeight;
   }
-  function pinIfFollowing() {
-    if (followingOutput) pinToBottom();
-  }
-  historyEl.addEventListener("scroll", function() {
-    followingOutput = atBottom();
-  });
   var formEl = root.querySelector(".lmw-form");
   var inputEl = root.querySelector(".lmw-input");
   var clearBtn = root.querySelector(".lmw-clear");
@@ -4505,6 +4510,7 @@ function boot(cfg) {
   }
   var pendingTurnLabel = null;
   function appendTurn(role, text, turnLabel) {
+    var following = atBottom();
     var welcome = historyEl.querySelector(".lmw-welcome");
     if (welcome) welcome.remove();
     var div = document.createElement("div");
@@ -4531,7 +4537,7 @@ function boot(cfg) {
     div.appendChild(document.createTextNode(" "));
     div.appendChild(body);
     historyEl.appendChild(div);
-    pinIfFollowing();
+    if (role === "user" || following) pinToBottom();
     body.roleLabel = label;
     return body;
   }
@@ -4581,6 +4587,7 @@ function boot(cfg) {
     return liveChips;
   }
   function announceToolCall(toolCall) {
+    var following = atBottom();
     var row = chipRow();
     if (!row) return;
     var chip = document.createElement("span");
@@ -4589,7 +4596,7 @@ function boot(cfg) {
     chip.dataset.tool = toolCall.name;
     row.appendChild(chip);
     pendingChips.push(chip);
-    pinIfFollowing();
+    if (following) pinToBottom();
   }
   function resolveToolCall(outcome) {
     var idx = pendingChips.findIndex(function(c) {
@@ -4605,6 +4612,7 @@ function boot(cfg) {
   var currentThinkingBody = null;
   var activeAssistantBody = null;
   function ensureThinkingBlock() {
+    var following = atBottom();
     if (currentThinkingBody) return currentThinkingBody;
     var details = document.createElement("details");
     details.className = "message-thinking";
@@ -4629,7 +4637,7 @@ function boot(cfg) {
     } else {
       historyEl.appendChild(details);
     }
-    pinIfFollowing();
+    if (following) pinToBottom();
     currentThinkingBlock = details;
     currentThinkingBody = body;
     return body;
@@ -4746,7 +4754,6 @@ function boot(cfg) {
     var userText = inputEl.value.trim();
     if (!userText) return;
     inputEl.value = "";
-    followingOutput = true;
     appendTurn("user", userText, pendingTurnLabel);
     pendingTurnLabel = null;
     if (currentAbort) {
@@ -4809,19 +4816,21 @@ function boot(cfg) {
           collapseThinkingBlock();
         },
         onThinkingDelta: function(delta) {
+          var following = atBottom();
           var body = ensureThinkingBlock();
           body.appendChild(document.createTextNode(delta));
           body.scrollTop = body.scrollHeight;
-          pinIfFollowing();
+          if (following) pinToBottom();
         },
         onTextDelta: function(delta) {
+          var following = atBottom();
           markDone(assistantBody.roleLabel);
           collapseThinkingBlock();
           assistantMarkdown += delta;
           renderMarkdownInto(assistantBody, assistantMarkdown);
           liveTurn.content = assistantMarkdown;
           persistSoon();
-          pinIfFollowing();
+          if (following) pinToBottom();
         }
       });
       liveTurn.content = result.content;
