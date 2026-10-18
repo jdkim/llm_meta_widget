@@ -3,6 +3,24 @@
 This file starts at 0.8.0, the first release with a breaking change worth
 calling out. Earlier releases are in the git history (`git log --oneline v0.7.6`).
 
+## Unreleased
+
+### Added: the panel says when reference data did not fit
+
+A resource refused by the budget used to disappear with nothing but a line in
+the browser console: the model answered from less than the page offered, and
+nobody was told. The panel now reports it, naming the resource, its size and
+what the model allows — once per budget, on the first turn it affects, and
+again if a different model changes the figures.
+
+The model is deliberately NOT told. It cannot fetch a resource — only the
+client reads those — so telling it would spend context on something it can do
+nothing about. The reader can act: choose a model with a larger window, or ask
+the page author for a smaller reference.
+
+A resource the page withholds on purpose (`autoAttach: false`) is not reported,
+since that is the author's choice rather than an omission.
+
 ## 0.12.2
 
 ### Changed: one oversized tool result is shortened, not paid for by the others

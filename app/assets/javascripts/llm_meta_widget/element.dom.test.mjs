@@ -26,6 +26,9 @@ let sentBodies = []
 let hubLlms = null
 // What a hub-proxied tool call answers, for a test that needs a big one.
 let hubToolResult = { ok: true }
+// A host-wide manifest, and what its resources/list answers.
+let hostManifest = { servers: [] }
+let hostResources = []
 
 function installGlobals() {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://host.example/page" })
@@ -66,7 +69,14 @@ function installGlobals() {
       }
       return new Response(body, sse)
     }
-    const json = (body) => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) })
+    // `headers` matters: mcpRpc reads content-type, and a response without it
+    // throws — which listMcpResources swallows, so an MCP path would behave as
+    // if the server had returned nothing at all.
+    const json = (body) => ({
+    	ok: true, status: 200,
+    	headers: { get: (k) => (String(k).toLowerCase() === "content-type" ? "application/json" : null) },
+    	json: async () => body, text: async () => JSON.stringify(body)
+    })
     if (u.includes("/api/llms"))        return json(hubLlms || { llms: [ { models: [ { value: "m1" }, { value: "m2" } ] } ] })
     if (/\/api\/mcp_servers\/[^/]+\/tools/.test(u)) {
       const uuid = u.match(/mcp_servers\/([^/]+)\/tools/)[1]
@@ -74,6 +84,18 @@ function installGlobals() {
       return json({ tools: (s && s.tools) || [] })
     }
     if (u.includes("/api/mcp_servers")) return json({ mcp_servers: hubServers })
+    // A host-wide (Class 2) server: a well-known manifest naming an endpoint,
+    // plus JSON-RPC at that endpoint. `hostResources` is what resources/list
+    // answers, so a test can offer an oversized reference.
+    if (u.includes("/.well-known/mcp.json")) return json(hostManifest)
+    if (u.includes("/host-mcp")) {
+    	const rpc = JSON.parse(init.body || "{}")
+    	if (rpc.method === "resources/list") return json({ result: { resources: hostResources } })
+    	if (rpc.method === "resources/read") {
+    		return json({ result: { contents: [ { uri: rpc.params && rpc.params.uri, text: "R".repeat(200) } ] } })
+    	}
+    	return json({ result: {} })
+    }
     // A hub-proxied tool's real result goes back to the model, unlike a page
     // action's (the loop reports only {ok, applied} for those) — so this is the
     // only path a test can use to put a large result in the context.
@@ -106,7 +128,7 @@ before(() => { assert.ok(customElements.get("llm-meta-widget"), "the bundle shou
 // without this a test restores the previous test's conversation — which made an
 // assertion about "the saved question" read a question from two tests ago.
 beforeEach(() => {
-  hubServers = []; sentBodies = []; hubLlms = null; streamScript = null; hubToolResult = { ok: true }
+  hubServers = []; sentBodies = []; hubLlms = null; streamScript = null; hubToolResult = { ok: true }; hostManifest = { servers: [] }; hostResources = []
   try { window.sessionStorage.clear() } catch { /* storage may be unavailable */ }
 })
 
@@ -1551,4 +1573,170 @@ test("the block still closes where requestAnimationFrame does not exist", async 
   } finally {
     globalThis.requestAnimationFrame = real
   }
+})
+
+// --- reference data that did not fit --------------------------------------
+//
+// It used to vanish with only a console line: the model answered from less than
+// the page offered and nobody was told. The MODEL is deliberately not told —
+// it cannot fetch a resource, so the notice would cost tokens for nothing —
+// but the reader can act on it.
+
+async function turnWithAnOversizedResource(declaredSize) {
+  hubLlms = { llms: [ { family: "ollama", available_models: [
+    { value: "m1", label: "m1", supports_tools: true, max_input_tokens: 32_768 }
+  ] } ] }
+  globalThis.window.aiResources = { "page:big_ref": () => "R".repeat(declaredSize) }
+  await mountWithPage({ card: { resources: [
+    { uri: "page:big_ref", name: "BigRef", description: "a large reference", size: declaredSize }
+  ] } })
+  const panel = document.getElementById("llm-meta-widget-chat")
+  const system = await systemPromptAfterATurn(panel)
+  delete globalThis.window.aiResources
+  return { panel, system }
+}
+
+test("a reference refused for size is reported to the reader", async () => {
+  // 20,000 bytes against a 32k model's 8,192-byte budget.
+  const { panel, system } = await turnWithAnOversizedResource(20_000)
+
+  assert.match(panel.textContent, /Did not attach the BigRef reference/)
+  assert.match(panel.textContent, /20 KB/)
+  assert.match(panel.textContent, /8 KB for reference data/)
+  assert.match(panel.textContent, /larger context window/)
+  assert.doesNotMatch(system, /Did not attach/, "the model is not told: it cannot act on it")
+})
+
+test("the notice is given once, not on every turn", async () => {
+  // The budget has not changed between the turns, so the refusal is the same
+  // fact twice — saying it again would be noise in somebody else's page.
+  const { panel } = await turnWithAnOversizedResource(20_000)
+  globalThis.window.aiResources = { "page:big_ref": () => "R".repeat(20_000) }
+  await systemPromptAfterATurn(panel)
+  delete globalThis.window.aiResources
+
+  const said = (panel.textContent.match(/Did not attach the BigRef/g) || []).length
+  assert.equal(said, 1, `two turns, one notice — got ${said}`)
+})
+
+test("a reference that fits produces no notice", async () => {
+  const { panel } = await turnWithAnOversizedResource(2_000)
+
+  assert.doesNotMatch(panel.textContent, /Did not attach/)
+})
+
+test("a reference the page withholds on purpose is not reported", async () => {
+  // autoAttach:false is the page author's decision, not an omission.
+  hubLlms = { llms: [ { family: "ollama", available_models: [
+    { value: "m1", label: "m1", supports_tools: true, max_input_tokens: 32_768 } ] } ] }
+  globalThis.window.aiResources = { "page:held": () => "small" }
+  await mountWithPage({ card: { resources: [
+    { uri: "page:held", name: "Held", description: "d", size: 100,
+      _meta: { "io.modelcontextprotocol/static-primitives": { autoAttach: false } } }
+  ] } })
+  const panel = document.getElementById("llm-meta-widget-chat")
+  await systemPromptAfterATurn(panel)
+
+  assert.doesNotMatch(panel.textContent, /Did not attach/)
+  delete globalThis.window.aiResources
+})
+
+test("a host-wide reference refused for size is reported too", async () => {
+  // This is the path PubDictionaries' catalog takes — a resource from a
+  // host-wide MCP server, not from the page card. Both paths record a refusal,
+  // and only a test per path can show it.
+  hubLlms = { llms: [ { family: "ollama", available_models: [
+    { value: "m1", label: "m1", supports_tools: true, max_input_tokens: 32_768 } ] } ] }
+  // The manifest publishes servers with their tools; endpoints are learned
+  // from it, which is how the resource listing is reached at all.
+  hostManifest = { servers: [ { url: "https://host.example/host-mcp",
+                                tools: [ { name: "search", description: "d", input_schema: {} } ] } ] }
+  // mimeType matters: loadHostResource only considers application/json, so a
+  // fixture without it offers no candidate and the test proves nothing.
+  hostResources = [ { uri: "catalog://dictionaries", name: "Dictionary catalog",
+                      description: "every dictionary", size: 40_000,
+                      mimeType: "application/json" } ]
+
+  const panel = await mount({ "well-known-urls": "https://host.example/.well-known/mcp.json" }, 300)
+  panel.querySelector("textarea").value = "which dictionaries exist"
+  panel.querySelector("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(250)
+
+  assert.match(panel.textContent, /Did not attach the Dictionary catalog reference/)
+  assert.match(panel.textContent, /39 KB/)
+})
+
+test("a second refusal is counted, not listed one by one", async () => {
+  globalThis.window.aiResources = {
+    "page:a": () => "A".repeat(20_000), "page:b": () => "B".repeat(20_000)
+  }
+  hubLlms = { llms: [ { family: "ollama", available_models: [
+    { value: "m1", label: "m1", supports_tools: true, max_input_tokens: 32_768 } ] } ] }
+  await mountWithPage({ card: { resources: [
+    { uri: "page:a", name: "RefA", description: "d", size: 20_000 },
+    { uri: "page:b", name: "RefB", description: "d", size: 20_000 }
+  ] } })
+  const panel = document.getElementById("llm-meta-widget-chat")
+  await systemPromptAfterATurn(panel)
+
+  assert.match(panel.textContent, /Did not attach the RefA reference and 1 other reference/)
+  delete globalThis.window.aiResources
+})
+
+test("switching to a model with less room reports the refusal again", async () => {
+  // The budget follows the model, so the same reference can be affordable on
+  // one and not on the next. Saying it once per session would leave a reader
+  // who switched down wondering why the answer got vaguer.
+  hubLlms = { llms: [ { family: "ollama", available_models: [
+    { value: "m1", label: "roomy", supports_tools: true, max_input_tokens: 1_000_000 },
+    { value: "m2", label: "tight", supports_tools: true, max_input_tokens: 32_768 }
+  ] } ] }
+  globalThis.window.aiResources = { "page:big_ref": () => "R".repeat(20_000) }
+  await mountWithPage({ card: { resources: [
+    { uri: "page:big_ref", name: "BigRef", description: "d", size: 20_000 }
+  ] } })
+  const panel = document.getElementById("llm-meta-widget-chat")
+
+  const before = await systemPromptAfterATurn(panel)
+  assert.match(before, /RRRR/, "the roomy model affords it, so no notice yet")
+  assert.doesNotMatch(panel.textContent, /Did not attach/)
+
+  const picker = panel.querySelector("select")
+  picker.value = "m2"
+  picker.dispatchEvent(new window.Event("change", { bubbles: true }))
+  await systemPromptAfterATurn(panel)
+
+  assert.match(panel.textContent, /Did not attach the BigRef reference/,
+    "after switching down, the reference no longer fits and the reader is told")
+  delete globalThis.window.aiResources
+})
+
+test("switching between two models that both refuse says it again, with the new figures", async () => {
+  // Once-per-budget, not once-per-session. A reader who switches and still does
+  // not get the reference should be told under the new budget — otherwise the
+  // first notice looks like it was dealt with.
+  hubLlms = { llms: [ { family: "ollama", available_models: [
+    { value: "m1", label: "small", supports_tools: true, max_input_tokens: 32_768 },
+    { value: "m2", label: "medium", supports_tools: true, max_input_tokens: 48_000 }
+  ] } ] }
+  globalThis.window.aiResources = { "page:big_ref": () => "R".repeat(20_000) }
+  await mountWithPage({ card: { resources: [
+    { uri: "page:big_ref", name: "BigRef", description: "d", size: 20_000 }
+  ] } })
+  const panel = document.getElementById("llm-meta-widget-chat")
+
+  await systemPromptAfterATurn(panel)
+  assert.equal((panel.textContent.match(/Did not attach the BigRef/g) || []).length, 1,
+    "refused on the 32k model")
+
+  const picker = panel.querySelector("select")
+  picker.value = "m2"
+  picker.dispatchEvent(new window.Event("change", { bubbles: true }))
+  await systemPromptAfterATurn(panel)
+
+  // 48,000 * 6.25% * 4 = 12,000 bytes, still short of 20,000.
+  assert.equal((panel.textContent.match(/Did not attach the BigRef/g) || []).length, 2,
+    "and refused again on the 48k model, under its own budget")
+  assert.match(panel.textContent, /12 KB for reference data/)
+  delete globalThis.window.aiResources
 })

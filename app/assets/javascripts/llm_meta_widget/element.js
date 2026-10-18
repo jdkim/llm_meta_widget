@@ -171,7 +171,35 @@ function boot(cfg) {
 
   	// Rounded to the nearest thousand and grouped, so the numbers read as a
   	// scale rather than as a precise count the estimate cannot support.
-  	function thousands(n) {
+  	// Reference data the budget refused, so the panel can say so on the next
+	// turn. NOT announced at boot: appendTurn persists, so a boot-time notice
+	// would be saved into the transcript and repeat on every reload.
+	//
+	// The model is not told, deliberately. It cannot fetch a resource — only the
+	// client reads those — so telling it would spend tokens on something it can
+	// do nothing about. The person CAN act: pick a model with more room, or ask
+	// the page author for a smaller reference.
+	var skippedResources = [];
+	var announcedSkips   = false;
+
+	function kb(bytes) { return Math.round((bytes || 0) / 1024) + " KB"; }
+
+	// `origin` is "page" for a page-card resource and "host" for one from a
+	// host-wide server. It matters when the budget changes: page resources are
+	// planned again, so their refusals are re-recorded, while a host resource is
+	// listed once at boot and never re-planned. Clearing both on a re-plan
+	// erased the host refusal before it could be reported — which silenced the
+	// case that matters most, since PubDictionaries' catalog arrives that way.
+	function noteSkippedResource(plan, budget, origin) {
+		// A resource the page marked autoAttach:false is a deliberate choice, not
+		// an omission — only a budget refusal is worth reporting.
+		if (plan.reason !== "over-budget") return;
+		var name = plan.name || plan.uri;
+		skippedResources = skippedResources.filter(function(s) { return s.name !== name; });
+		skippedResources.push({ name: name, size: plan.size, budget: budget, origin: origin });
+	}
+
+	function thousands(n) {
   		return (Math.round(n / 1000) * 1000).toLocaleString("en-US");
   	}
 
@@ -701,12 +729,19 @@ function boot(cfg) {
   		var budget = resourceBudget();
   		if (pageResourcePlans === null || budget !== pageResourcePlansBudget) {
   			pageResourcePlansBudget = budget;
+			// A different budget is a different decision: say it again. Only the
+			// page's own refusals are dropped — those are about to be re-recorded
+			// by the planning below. A host resource is listed once at boot, so
+			// discarding its refusal here would lose it for good.
+			skippedResources = skippedResources.filter(function(s) { return s.origin !== "page"; });
+			announcedSkips   = false;
   			pageResourcePlans = planPageResources({
   				entries:     pageCard.resources,
   				budgetBytes: budget,
   				onSkip: function(plan) {
   					console.info("[llm_meta_widget] not attaching " + plan.uri +
   					             " (" + plan.reason + ", size=" + plan.size + ")");
+  					             noteSkippedResource(plan, resourceBudget(), "page");
   				}
   			});
   		}
@@ -759,6 +794,7 @@ function boot(cfg) {
   					onSkip: function(plan) {
   						console.info("[llm_meta_widget] not attaching " + plan.uri +
   						             " (" + plan.reason + ", size=" + plan.size + ")");
+  						             noteSkippedResource(plan, resourceBudget(), "host");
   					}
   				});
   				// A volatile resource comes back with no context — it is read
@@ -1310,6 +1346,23 @@ function boot(cfg) {
   		if (!userText) return;
   		inputEl.value = "";
   		appendTurn("user", userText, pendingTurnLabel);
+
+  		// Reference data that did not fit, reported once per budget, at the moment
+  		// it affects an answer rather than at boot.
+  		// Plan the page's resources first: the refusals are recorded while planning,
+  		// which otherwise happens later in the turn — after this check had already
+  		// looked at an empty list and said nothing.
+  		pageResourcePlansNow();
+  		if (skippedResources.length && !announcedSkips) {
+  			announcedSkips = true;
+  			var skipped = skippedResources[0];
+  			var others = skippedResources.length - 1;
+  			var alsoText = others > 0 ? " and " + others + " other reference" + (others > 1 ? "s" : "") : "";
+  			appendTurn("system", "Did not attach the " + skipped.name + " reference" + alsoText +
+  				" (" + kb(skipped.size) + ", and a " + MODEL + " turn allows " + kb(skipped.budget) +
+  				" for reference data), so the answer may be less precise." +
+  				" A model with a larger context window would make room.");
+  		}
   		pendingTurnLabel = null;
 
   		if (currentAbort) { try { currentAbort.abort(); } catch (e) { /* noop */ } }

@@ -3988,6 +3988,19 @@ function boot(cfg) {
   var toggleBtn = document.getElementById("llm-meta-widget-toggle");
   var historyEl = root.querySelector(".lmw-messages");
   var SCROLL_PIN_SLACK = 40;
+  var skippedResources = [];
+  var announcedSkips = false;
+  function kb(bytes) {
+    return Math.round((bytes || 0) / 1024) + " KB";
+  }
+  function noteSkippedResource(plan, budget, origin) {
+    if (plan.reason !== "over-budget") return;
+    var name = plan.name || plan.uri;
+    skippedResources = skippedResources.filter(function(s) {
+      return s.name !== name;
+    });
+    skippedResources.push({ name, size: plan.size, budget, origin });
+  }
   function thousands(n) {
     return (Math.round(n / 1e3) * 1e3).toLocaleString("en-US");
   }
@@ -4382,11 +4395,16 @@ function boot(cfg) {
     var budget = resourceBudget();
     if (pageResourcePlans === null || budget !== pageResourcePlansBudget) {
       pageResourcePlansBudget = budget;
+      skippedResources = skippedResources.filter(function(s) {
+        return s.origin !== "page";
+      });
+      announcedSkips = false;
       pageResourcePlans = planPageResources({
         entries: pageCard.resources,
         budgetBytes: budget,
         onSkip: function(plan) {
           console.info("[llm_meta_widget] not attaching " + plan.uri + " (" + plan.reason + ", size=" + plan.size + ")");
+          noteSkippedResource(plan, resourceBudget(), "page");
         }
       });
     }
@@ -4417,6 +4435,7 @@ function boot(cfg) {
           read: readMcpResource,
           onSkip: function(plan) {
             console.info("[llm_meta_widget] not attaching " + plan.uri + " (" + plan.reason + ", size=" + plan.size + ")");
+            noteSkippedResource(plan, resourceBudget(), "host");
           }
         });
         if (loaded && loaded.plan && loaded.plan.fetch) {
@@ -4807,6 +4826,14 @@ function boot(cfg) {
     if (!userText) return;
     inputEl.value = "";
     appendTurn("user", userText, pendingTurnLabel);
+    pageResourcePlansNow();
+    if (skippedResources.length && !announcedSkips) {
+      announcedSkips = true;
+      var skipped = skippedResources[0];
+      var others = skippedResources.length - 1;
+      var alsoText = others > 0 ? " and " + others + " other reference" + (others > 1 ? "s" : "") : "";
+      appendTurn("system", "Did not attach the " + skipped.name + " reference" + alsoText + " (" + kb(skipped.size) + ", and a " + MODEL + " turn allows " + kb(skipped.budget) + " for reference data), so the answer may be less precise. A model with a larger context window would make room.");
+    }
     pendingTurnLabel = null;
     if (currentAbort) {
       try {
