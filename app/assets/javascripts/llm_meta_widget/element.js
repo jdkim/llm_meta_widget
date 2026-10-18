@@ -1143,7 +1143,10 @@ function boot(cfg) {
   	// pixels — while scrollTop and scrollHeight stay correct. So the reader can
   	// scroll a few pixels and no further, by any input method, while
   	// `scrollTop = 600` set from script still works. Chrome 154 reproduces it
-  	// with no widget code at all; Firefox 158 never does (reported 2026-10-17).
+  	// with no widget code at all; Firefox 158 never does.
+	// https://issues.chromium.org/issues/574960594 — docs/chromium-scroll-bug.md has the
+	// measurements and a self-checking test case. Remove this once the fix
+	// has shipped widely enough.
   	//
   	// Taking the scroller off the inner box BEFORE the close avoids the state.
   	// Two frames, because one is not enough for Chrome to pick up the new

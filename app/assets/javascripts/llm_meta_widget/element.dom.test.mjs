@@ -1447,7 +1447,8 @@ test("a reader who scrolls is not re-pinned before the scroll event arrives", as
 // is the only reason the message list overflows, leaves Chrome with a stale
 // WHEEL range: the reader can scroll a few pixels and no further, by any input
 // method, while scrollTop set from script still works. Confirmed on Chrome 154
-// with no widget code involved, and never on Firefox 158 (2026-10-17).
+// with no widget code involved, and never on Firefox 158.
+// https://issues.chromium.org/issues/574960594
 //
 // The order is the fix: the inner box must stop being a scroller BEFORE the
 // close. These assert that order, not merely the end state.

@@ -1,0 +1,113 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<title>Chromium: stale wheel range after closing a details that holds a scroller</title>
+<style>
+  body { font: 14px system-ui; margin: 24px; }
+  /* The ancestor with overflow:hidden — required for the fault. */
+  .panel { width: 34em; height: 360px; display: flex; flex-direction: column;
+           border: 1px solid #ccc; padding: 10px; overflow: hidden; }
+  /* The scroll container that ends up with a stale wheel range. */
+  .list { flex: 1; overflow-y: auto; background: #fafafa; padding: 8px; }
+  /* The scroller INSIDE the details — also required. */
+  .inner { max-height: 10em; overflow-y: auto; white-space: pre-wrap;
+           font-family: ui-monospace, monospace; color: #555; }
+  p { margin: 0 0 10px; }
+  #out { font-family: ui-monospace, monospace; white-space: pre; margin-top: 12px; }
+  button { font: inherit; }
+</style></head>
+<body>
+<h3>Stale wheel range after closing a &lt;details&gt; containing a scroller</h3>
+<p>
+  Press <b>run cycles</b>, then scroll the grey box with a <b>real</b> wheel,
+  trackpad or keyboard. A dispatched <code>WheelEvent</code> will not scroll —
+  synthetic events never reach the compositor — so use CDP
+  <code>Input.dispatchMouseEvent {type:"mouseWheel"}</code> or real hardware.
+</p>
+<div class="panel">
+  <div class="list" id="list"></div>
+</div>
+<div>
+  <button id="run">run cycles (3)</button>
+  <button id="to600">set scrollTop = 600</button>
+  <button id="report">report</button>
+</div>
+<div id="out">press "run cycles", then scroll</div>
+<script>
+const list = document.getElementById('list');
+const out = document.getElementById('out');
+const frame = () => new Promise(r => requestAnimationFrame(r));
+const trail = [];
+
+// Baseline: enough to nearly fill the list, so that an OPEN <details> is what
+// makes it overflow and closing returns it to not overflowing. Without that
+// transition the fault cannot occur, so the cycle numbers below are reported
+// and must read overflowWhileOpen > 0 and overflowAfterClose = 0.
+(() => {
+  const p = document.createElement('p');
+  p.textContent = 'Question, and the first part of the answer. ' +
+    'Alpha-1-antitrypsin deficiency arises from missense variants in SERPINA1. '.repeat(6);
+  document.getElementById('list').appendChild(p);
+})();
+list.addEventListener('scroll', () => { trail.push(+list.scrollTop.toFixed(1)); report(); });
+
+function report() {
+  out.textContent =
+    'scrollTop ' + list.scrollTop.toFixed(1) +
+    '   max ' + (list.scrollHeight - list.clientHeight) +
+    '   scrollHeight ' + list.scrollHeight + '   clientHeight ' + list.clientHeight +
+    '\ntrail (last 12): ' + JSON.stringify(trail.slice(-12));
+}
+
+// One cycle: an open <details> whose own scroller is the ONLY reason the list
+// overflows, closed with open=false, then a SMALL paragraph added so the list
+// returns to not overflowing. The fault needs that transition — scrollable
+// while open, NOT scrollable once closed — which is only possible while the
+// accumulated content still fits. The bulk arrives after the cycles.
+async function cycle(i) {
+  const d = document.createElement('details');
+  d.open = true;
+  d.innerHTML = '<summary>thinking ' + i + '</summary>' +
+                '<div class="inner">' + ('weighing option ' + i + '. ').repeat(60) + '</div>';
+  list.appendChild(d);
+  await frame(); await frame();
+  const whileOpen = list.scrollHeight - list.clientHeight;
+
+  d.open = false;                       // <-- the trigger
+  await frame(); await frame();
+  const afterClose = list.scrollHeight - list.clientHeight;
+
+  const p = document.createElement('p');
+  p.textContent = 'Step ' + i + ' done.';
+  list.appendChild(p);
+  await frame(); await frame();
+  return { cycle: i, overflowWhileOpen: whileOpen, overflowAfterClose: afterClose,
+           afterSmallAdd: list.scrollHeight - list.clientHeight };
+}
+
+// The answer, added once the cycles are done: this is what makes the list
+// scrollable again, and by a lot.
+async function addAnswer() {
+  for (let i = 0; i < 14; i++) {
+    const p = document.createElement('p');
+    p.textContent = 'Answer paragraph ' + i + '. ' +
+      'Alpha-1-antitrypsin deficiency arises from missense variants whose effect on glycosylation ' +
+      'depends on the position of the substitution relative to each sequon. '.repeat(2);
+    list.appendChild(p);
+  }
+  await frame(); await frame();
+}
+
+document.getElementById('run').onclick = async () => {
+  const steps = [];
+  for (let i = 1; i <= 3; i++) steps.push(await cycle(i));
+  await addAnswer();
+  out.textContent = 'cycles: ' + JSON.stringify(steps) +
+    '\n\nnow scroll with a real wheel. max is ' + (list.scrollHeight - list.clientHeight);
+};
+document.getElementById('to600').onclick = () => { list.scrollTop = 600; report(); };
+document.getElementById('report').onclick = report;
+window.__probe = () => ({ scrollTop: list.scrollTop, scrollHeight: list.scrollHeight,
+                          clientHeight: list.clientHeight,
+                          max: list.scrollHeight - list.clientHeight, trail: trail.slice(-20) });
+</script>
+</body></html>
