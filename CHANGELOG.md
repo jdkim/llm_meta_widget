@@ -3,6 +3,26 @@
 This file starts at 0.8.0, the first release with a breaking change worth
 calling out. Earlier releases are in the git history (`git log --oneline v0.7.6`).
 
+## 0.14.0
+
+### Breaking: a transport declared in top-level `remotes` is no longer read
+
+0.13.0 moved the declaration into
+`_meta["io.modelcontextprotocol/static-primitives"].transports` and kept reading
+the old top-level `remotes` list, with a warning, so that a page and a widget
+could be updated in either order. That transition is over.
+
+**If your page card still declares its transport in `remotes`, move it to
+`transports` before taking this release.** A card that still carries the old
+spelling gets no handlers from the card: the widget falls back to
+`window.aiActions`, `window.aiPrompts` and `window.aiResources`, which is
+nothing at all for a page that does not define them. The widget reports the
+situation in the browser console rather than leaving you to find it, but it
+cannot dispatch.
+
+Nothing else changed. If your card already declares `transports`, this release
+behaves exactly like 0.13.1.
+
 ## 0.13.1
 
 ### Documentation: the README caught up with 0.12.x and 0.13.0

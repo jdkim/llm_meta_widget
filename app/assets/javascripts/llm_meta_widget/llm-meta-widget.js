@@ -701,12 +701,8 @@ function declaredPageGlobal(card, warn = console.warn) {
     warn("[llm-meta-widget] page card declares transports " + JSON.stringify(declared.map((t) => t && t.type)) + ", none of which this widget supports; not dispatching to the page");
     return null;
   }
-  for (const remote of card && card.remotes || []) {
-    if (!remote || remote.type !== PAGE_GLOBAL_TRANSPORT) continue;
-    if (typeof remote.global === "string" && remote.global.trim() !== "") {
-      warn(`[llm-meta-widget] page card declares its transport in top-level "remotes", which is deprecated; move it to _meta["${STATIC_PRIMITIVES_META}"].transports`);
-      return remote.global.trim();
-    }
+  if ((card && card.remotes || []).some((r) => r && r.type === PAGE_GLOBAL_TRANSPORT)) {
+    warn(`[llm-meta-widget] page card declares its transport in top-level "remotes", which is no longer read. Move it to _meta["${STATIC_PRIMITIVES_META}"].transports`);
   }
   return null;
 }

@@ -1130,10 +1130,9 @@ export const PAGE_GLOBAL_TRANSPORT = "page-global"
 // `page-postmessage`, `page-jsonrpc` and `page-worker` are reserved, and a card
 // declaring only those gets no handlers rather than the wrong ones.
 //
-// Top-level `remotes` is the pre-d44bd25a shape that 0.11.1 and 0.12.2 read. It
-// is accepted for one release so a page and a widget can be updated in either
-// order without the page going dark in between, and it warns so the author
-// knows to move.
+// Top-level `remotes` is the pre-d44bd25a shape that 0.11.1 to 0.12.2 read and
+// 0.13.x accepted. It is no longer read, but a card still carrying it is
+// reported, because the alternative is a page that quietly stops working.
 export function declaredPageGlobal(card, warn = console.warn) {
   const declared = (card && card.transports) || []
   for (const transport of declared) {
@@ -1149,14 +1148,14 @@ export function declaredPageGlobal(card, warn = console.warn) {
     return null
   }
 
-  for (const remote of (card && card.remotes) || []) {
-    if (!remote || remote.type !== PAGE_GLOBAL_TRANSPORT) continue
-    if (typeof remote.global === "string" && remote.global.trim() !== "") {
-      warn('[llm-meta-widget] page card declares its transport in top-level ' +
-           '"remotes", which is deprecated; move it to ' +
-           `_meta["${STATIC_PRIMITIVES_META}"].transports`)
-      return remote.global.trim()
-    }
+  // No longer read. Reporting it is still worth a few lines: without this a
+  // card that declares its transport only in the old place gets no handlers,
+  // falls through to the legacy globals, and a page that deliberately defines
+  // none — as PubDictionaries does — simply stops working with nothing said.
+  if (((card && card.remotes) || []).some((r) => r && r.type === PAGE_GLOBAL_TRANSPORT)) {
+    warn('[llm-meta-widget] page card declares its transport in top-level ' +
+         '"remotes", which is no longer read. Move it to ' +
+         `_meta["${STATIC_PRIMITIVES_META}"].transports`)
   }
   return null
 }

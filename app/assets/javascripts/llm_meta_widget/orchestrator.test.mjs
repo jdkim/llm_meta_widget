@@ -2140,13 +2140,13 @@ test("declaredPageGlobal ignores a transport of another type", () => {
   // rather than three handler maps. Dispatching maps against it would be
   // wrong, so the type check has to be what rejects it — not the absence of a
   // `global` field, which is all a streamable-http entry would have proved.
-  assert.equal(declaredPageGlobal({ remotes: [ { type: "page-jsonrpc", global: "mcp" } ] }), null)
-  assert.equal(declaredPageGlobal({ remotes: [ { type: "streamable-http", url: "https://x/mcp" } ] }), null)
+  assert.equal(declaredPageGlobal({ transports: [ { type: "page-jsonrpc", global: "mcp" } ] }, () => {}), null)
+  assert.equal(declaredPageGlobal({ transports: [ { type: "streamable-http", url: "https://x/mcp" } ] }, () => {}), null)
 })
 
 test("declaredPageGlobal ignores a blank or missing global name", () => {
-  assert.equal(declaredPageGlobal({ remotes: [ { type: "page-global", global: "  " } ] }), null)
-  assert.equal(declaredPageGlobal({ remotes: [ { type: "page-global" } ] }), null)
+  assert.equal(declaredPageGlobal({ transports: [ { type: "page-global", global: "  " } ] }, () => {}), null)
+  assert.equal(declaredPageGlobal({ transports: [ { type: "page-global" } ] }, () => {}), null)
   assert.equal(declaredPageGlobal({}), null)
   assert.equal(declaredPageGlobal(), null)
 })
@@ -2182,7 +2182,7 @@ test("each map falls back on its own, so a part-moved page keeps working", () =>
 
 test("a page that declares no transport uses the legacy globals", () => {
   const scope = { aiActions: { a: 1 }, aiPrompts: { b: 2 }, aiResources: { c: 3 } }
-  const h = pageHandlers({ card: { remotes: [] }, scope,
+  const h = pageHandlers({ card: { transports: [] }, scope,
                            legacy: { tools: "aiActions", prompts: "aiPrompts", resources: "aiResources" } })
 
   assert.deepEqual([ h.tools, h.prompts, h.resources ], [ { a: 1 }, { b: 2 }, { c: 3 } ])
@@ -2203,20 +2203,22 @@ test("pageHandlers called with nothing yields empty maps", () => {
 })
 
 test("a card's declared transport survives the parse", () => {
+  // Inside the extension data, which is where the parser reads it from.
   const card = readStaticPrimitivesCard(JSON.stringify({
     name: "org.example/page",
-    remotes: [ { type: "page-global", global: "mcp" } ],
-    _meta: { "io.modelcontextprotocol/static-primitives": { tools: [ { name: "t" } ] } }
+    _meta: { "io.modelcontextprotocol/static-primitives": {
+      transports: [ { type: "page-global", global: "mcp" } ], tools: [ { name: "t" } ]
+    } }
   }), () => {})
 
-  assert.equal(declaredPageGlobal(card), "mcp")
+  assert.equal(declaredPageGlobal(card, () => {}), "mcp")
 })
 
 test("two blocks declaring different globals keep the first and report it", () => {
   const said = []
   const merged = mergeStaticPrimitivesCards([
-    { remotes: [ { type: "page-global", global: "first" } ] },
-    { remotes: [ { type: "page-global", global: "second" } ] }
+    { transports: [ { type: "page-global", global: "first" } ] },
+    { transports: [ { type: "page-global", global: "second" } ] }
   ], (m) => said.push(m))
 
   assert.equal(declaredPageGlobal(merged), "first")
@@ -2686,27 +2688,27 @@ test("a card offering only transports we cannot speak gets no handlers", () => {
   assert.match(said.join(" "), /page-jsonrpc/)
 })
 
-test("top-level remotes still works, with a deprecation warning", () => {
-  // The shape 0.11.1 and 0.12.2 read, and what PubDictionaries serves today.
+test("a card still using top-level remotes is reported, and gets no handlers", () => {
+  // 0.14.0 stopped reading it. Saying so matters: without the report the card
+  // would fall through to the legacy globals, and a page that deliberately
+  // defines none — PubDictionaries does not — would simply stop working.
   const said = []
   const card = readStaticPrimitivesCard(cardWith({ tools: [] },
     { remotes: [ { type: "page-global", global: "mcp" } ] }))
 
-  assert.equal(declaredPageGlobal(card, (m) => said.push(m)), "mcp")
-  assert.match(said.join(" "), /deprecated/)
+  assert.equal(declaredPageGlobal(card, (m) => said.push(m)), null)
+  assert.match(said.join(" "), /no longer read/)
   assert.match(said.join(" "), /transports/)
 })
 
-test("transports wins over remotes when a page carries both", () => {
-  // A page mid-migration may declare both; the current spelling decides, and
-  // no deprecation warning is due.
+test("transports decides when a page carries both, with nothing to report", () => {
   const said = []
   const card = readStaticPrimitivesCard(cardWith(
     { transports: [ { type: "page-global", global: "current" } ], tools: [] },
     { remotes: [ { type: "page-global", global: "old" } ] }))
 
   assert.equal(declaredPageGlobal(card, (m) => said.push(m)), "current")
-  assert.deepEqual(said, [], "nothing to warn about: the page already moved")
+  assert.deepEqual(said, [], "the page already declares the current spelling")
 })
 
 test("transports from several blocks concatenate in document order", () => {
@@ -2731,18 +2733,19 @@ test("two blocks naming different globals for one type is reported, first kept",
   assert.match(said.join(" "), /two blocks declare different page-global globals/)
 })
 
-test("the deprecation reaches a caller's own warn, not just the console", () => {
-  // pageHandlers takes a warn so a host can route messages; a deprecation that
-  // went straight to console.warn would bypass it and be invisible to anyone
-  // collecting warnings.
+test("the report about the old spelling reaches a caller's own warn", () => {
+  // pageHandlers takes a warn so a host can route messages. A report that went
+  // straight to console.warn would bypass it and be invisible to anyone
+  // collecting warnings — and this is the one that explains why a migrated page
+  // suddenly has no handlers.
   const said = []
   const handlers = pageHandlers({
     card: { remotes: [ { type: "page-global", global: "mcp" } ] },
-    scope: { mcp: { tools: { t: () => "ok" } } },
+    scope: { mcp: { tools: { t: () => "ok" } }, aiActions: {} },
     legacy: { tools: "aiActions" },
     warn: (m) => said.push(m)
   })
 
-  assert.equal(handlers.global, "mcp", "and it still resolves the handlers")
-  assert.match(said.join(" "), /deprecated/)
+  assert.equal(handlers.global, null, "the old spelling is not read any more")
+  assert.match(said.join(" "), /no longer read/)
 })

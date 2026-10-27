@@ -836,8 +836,9 @@ test("a card carrying both the media type and the legacy id is read once", async
 
 async function mountWithGlobal(ext) {
   document.body.innerHTML = ""
-  putTypedCard(ext, { name: "org.example/page",
-                      remotes: [ { type: "page-global", global: "mcp" } ] })
+  // transports lives INSIDE the extension data, not at the card's top level.
+  putTypedCard(Object.assign({ transports: [ { type: "page-global", global: "mcp" } ] }, ext),
+               { name: "org.example/page" })
   const el = document.createElement("llm-meta-widget")
   for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "" })) {
     el.setAttribute(k, v)

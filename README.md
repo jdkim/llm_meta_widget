@@ -312,10 +312,10 @@ widget supports today. Leave `transports` out and the widget reads
 `window.aiActions`, `window.aiPrompts` and `window.aiResources` instead — see
 "Say where your handlers live".
 
-Widgets up to 0.12.2 read this declaration from a `remotes` list at the top
-level of the card instead. Version 0.13.0 still reads that, and warns, so a page
-and a widget can be updated in either order. Write `transports`; a page may
-declare both while a deployment is still catching up, and `transports` decides.
+Widgets from 0.11.1 to 0.12.2 read this declaration from a `remotes` list at the
+top level of the card, and 0.13.x read either spelling. From 0.14.0 the old one
+is not read at all: a card that still carries it gets no handlers, and the
+widget reports that in the browser console. Write `transports`.
 
 A page may declare `prompts` in the same block. See [The page card](#the-page-card)
 for prompts, for the size and volatility hints on a resource, and for what
