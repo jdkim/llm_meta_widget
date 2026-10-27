@@ -3,7 +3,39 @@
 This file starts at 0.8.0, the first release with a breaking change worth
 calling out. Earlier releases are in the git history (`git log --oneline v0.7.6`).
 
-## Unreleased
+## 0.13.0
+
+### Changed: a page card declares its transport in `transports`, not `remotes`
+
+The declaration that says how to reach a page's handlers has moved, following
+SEP revision d44bd25a. It is now an array inside the extension data:
+
+```json
+{
+  "_meta": {
+    "io.modelcontextprotocol/static-primitives": {
+      "transports": [ { "type": "page-global", "global": "mcp" } ],
+      "tools": [], "prompts": [], "resources": []
+    }
+  }
+}
+```
+
+The reason is that the Server Card's `Remote.type` can only be
+`streamable-http` or `sse`, so `page-global` was never a valid value at the top
+level. It is an array because a page may come to offer more than one page-local
+transport, and the order is the author's preference.
+
+The widget reads the array in order and uses the first type it supports. It
+will not skip a supported entry for a later one. Only `page-global` is
+supported today; a card offering only `page-postmessage`, `page-jsonrpc` or
+`page-worker` gets no handlers rather than the wrong ones, and says so.
+
+**Top-level `remotes` still works in this release**, with a warning, so a page
+and a widget can be updated in either order without the page losing its tools
+in between. Move to `transports`; a later release will drop the fallback. If a
+page declares both, `transports` decides and nothing is reported.
+
 
 ### Added: the panel says when reference data did not fit
 

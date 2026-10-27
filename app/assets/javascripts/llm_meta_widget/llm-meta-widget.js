@@ -689,15 +689,29 @@ function modelWindowFrom(payload, modelId) {
   return null;
 }
 var PAGE_GLOBAL_TRANSPORT = "page-global";
-function declaredPageGlobal(card) {
+function declaredPageGlobal(card, warn = console.warn) {
+  const declared = card && card.transports || [];
+  for (const transport of declared) {
+    if (!transport || transport.type !== PAGE_GLOBAL_TRANSPORT) continue;
+    if (typeof transport.global === "string" && transport.global.trim() !== "") {
+      return transport.global.trim();
+    }
+  }
+  if (declared.length) {
+    warn("[llm-meta-widget] page card declares transports " + JSON.stringify(declared.map((t) => t && t.type)) + ", none of which this widget supports; not dispatching to the page");
+    return null;
+  }
   for (const remote of card && card.remotes || []) {
     if (!remote || remote.type !== PAGE_GLOBAL_TRANSPORT) continue;
-    if (typeof remote.global === "string" && remote.global.trim() !== "") return remote.global.trim();
+    if (typeof remote.global === "string" && remote.global.trim() !== "") {
+      warn(`[llm-meta-widget] page card declares its transport in top-level "remotes", which is deprecated; move it to _meta["${STATIC_PRIMITIVES_META}"].transports`);
+      return remote.global.trim();
+    }
   }
   return null;
 }
 function pageHandlers({ card, scope = {}, legacy = {}, warn = console.warn } = {}) {
-  const name = declaredPageGlobal(card);
+  const name = declaredPageGlobal(card, warn);
   const declared = name ? scope[name] : null;
   if (name && !declared) {
     warn(`[llm-meta-widget] the page card declares global "${name}", but window.${name} is not defined \u2014 is the script that defines it loaded, and did it run?`);
@@ -719,16 +733,19 @@ function pageHandlers({ card, scope = {}, legacy = {}, warn = console.warn } = {
   };
 }
 function mergeStaticPrimitivesCards(cards, warn = console.warn) {
-  const merged = { remotes: [], tools: [], prompts: [], resources: [] };
+  const merged = { transports: [], remotes: [], tools: [], prompts: [], resources: [] };
   for (const card of cards || []) {
-    for (const remote of card && card.remotes || []) {
-      const clash = merged.remotes.find((r) => r.type === remote.type && r.global !== remote.global);
-      if (clash) {
-        warn(`[llm-meta-widget] two blocks declare different ${remote.type} globals ("${clash.global}" and "${remote.global}"); using "${clash.global}"`);
-        continue;
-      }
-      if (!merged.remotes.some((r) => r.type === remote.type && r.global === remote.global)) {
-        merged.remotes.push(remote);
+    for (const kind of ["transports", "remotes"]) {
+      for (const entry of card && card[kind] || []) {
+        if (!entry || typeof entry.type !== "string") continue;
+        const clash = merged[kind].find((r) => r.type === entry.type && r.global !== entry.global);
+        if (clash) {
+          warn(`[llm-meta-widget] two blocks declare different ${entry.type} globals ("${clash.global}" and "${entry.global}"); using "${clash.global}"`);
+          continue;
+        }
+        if (!merged[kind].some((r) => r.type === entry.type && r.global === entry.global)) {
+          merged[kind].push(entry);
+        }
       }
     }
   }
@@ -749,7 +766,7 @@ function mergeStaticPrimitivesCards(cards, warn = console.warn) {
   return merged;
 }
 function readStaticPrimitivesCard(text, warn = console.warn) {
-  const empty = { remotes: [], tools: [], prompts: [], resources: [] };
+  const empty = { transports: [], remotes: [], tools: [], prompts: [], resources: [] };
   if (typeof text !== "string" || text.trim() === "") return empty;
   let doc;
   try {
@@ -769,7 +786,12 @@ function readStaticPrimitivesCard(text, warn = console.warn) {
     return ok;
   });
   return {
-    // The whole card's transport, so what it declares survives the parse.
+    // Where a page says how to reach its handlers. Since SEP d44bd25a this is
+    // `transports` inside the extension data, because the Server Card's
+    // `Remote.type` enum is streamable-http|sse and `page-global` was never a
+    // valid value there. Top-level `remotes` is what 0.11.1-0.12.2 read, and is
+    // still accepted for one release — see declaredPageGlobal.
+    transports: Array.isArray(ext.transports) ? ext.transports : [],
     remotes: Array.isArray(doc.remotes) ? doc.remotes : [],
     tools: named(ext.tools, "tool"),
     prompts: named(ext.prompts, "prompt"),

@@ -1122,10 +1122,41 @@ export function modelWindowFrom(payload, modelId) {
 
 export const PAGE_GLOBAL_TRANSPORT = "page-global"
 
-export function declaredPageGlobal(card) {
+// Which JS global holds the handlers, from the card's declared transports.
+//
+// The array is processed IN ORDER and the first entry whose type we support
+// wins: the page author's order is their preference, so a supported entry is
+// never skipped for a later one. Only `page-global` is supported today;
+// `page-postmessage`, `page-jsonrpc` and `page-worker` are reserved, and a card
+// declaring only those gets no handlers rather than the wrong ones.
+//
+// Top-level `remotes` is the pre-d44bd25a shape that 0.11.1 and 0.12.2 read. It
+// is accepted for one release so a page and a widget can be updated in either
+// order without the page going dark in between, and it warns so the author
+// knows to move.
+export function declaredPageGlobal(card, warn = console.warn) {
+  const declared = (card && card.transports) || []
+  for (const transport of declared) {
+    if (!transport || transport.type !== PAGE_GLOBAL_TRANSPORT) continue
+    if (typeof transport.global === "string" && transport.global.trim() !== "") {
+      return transport.global.trim()
+    }
+  }
+  if (declared.length) {
+    warn("[llm-meta-widget] page card declares transports " +
+         JSON.stringify(declared.map((t) => t && t.type)) +
+         ", none of which this widget supports; not dispatching to the page")
+    return null
+  }
+
   for (const remote of (card && card.remotes) || []) {
     if (!remote || remote.type !== PAGE_GLOBAL_TRANSPORT) continue
-    if (typeof remote.global === "string" && remote.global.trim() !== "") return remote.global.trim()
+    if (typeof remote.global === "string" && remote.global.trim() !== "") {
+      warn('[llm-meta-widget] page card declares its transport in top-level ' +
+           '"remotes", which is deprecated; move it to ' +
+           `_meta["${STATIC_PRIMITIVES_META}"].transports`)
+      return remote.global.trim()
+    }
   }
   return null
 }
@@ -1134,7 +1165,7 @@ export function declaredPageGlobal(card) {
 // to its legacy global independently, so a page part-way through moving over
 // keeps working instead of losing the primitives it has not moved yet.
 export function pageHandlers({ card, scope = {}, legacy = {}, warn = console.warn } = {}) {
-  const name = declaredPageGlobal(card)
+  const name = declaredPageGlobal(card, warn)
   const declared = name ? scope[name] : null
 
   // A card that names a global the page never defines is almost always a load
@@ -1179,20 +1210,28 @@ export function pageHandlers({ card, scope = {}, legacy = {}, warn = console.war
 // Picking the first would make which component wins depend on DOM order, which
 // is not something a page author controls when the components are partials.
 export function mergeStaticPrimitivesCards(cards, warn = console.warn) {
-  const merged = { remotes: [], tools: [], prompts: [], resources: [] }
-  // Each block is a full Server Card and may declare a transport. The first
-  // one wins; a second block naming a DIFFERENT global is an authoring error,
-  // because only one of them can be dispatched to.
+  const merged = { transports: [], remotes: [], tools: [], prompts: [], resources: [] }
+  // Each block is a full Server Card and may declare transports. They are
+  // concatenated in document order, because the order is the author's
+  // preference and selection honours it. A second block naming a DIFFERENT
+  // global for the same type is an authoring error — only one of them can be
+  // dispatched to — so the first is kept and the clash is reported.
+  //
+  // `remotes` is merged the same way: it is the deprecated spelling of the same
+  // thing, and a page mid-migration may still carry it.
   for (const card of cards || []) {
-    for (const remote of (card && card.remotes) || []) {
-      const clash = merged.remotes.find((r) => r.type === remote.type && r.global !== remote.global)
-      if (clash) {
-        warn(`[llm-meta-widget] two blocks declare different ${remote.type} globals ` +
-             `("${clash.global}" and "${remote.global}"); using "${clash.global}"`)
-        continue
-      }
-      if (!merged.remotes.some((r) => r.type === remote.type && r.global === remote.global)) {
-        merged.remotes.push(remote)
+    for (const kind of [ "transports", "remotes" ]) {
+      for (const entry of (card && card[kind]) || []) {
+        if (!entry || typeof entry.type !== "string") continue
+        const clash = merged[kind].find((r) => r.type === entry.type && r.global !== entry.global)
+        if (clash) {
+          warn(`[llm-meta-widget] two blocks declare different ${entry.type} globals ` +
+               `("${clash.global}" and "${entry.global}"); using "${clash.global}"`)
+          continue
+        }
+        if (!merged[kind].some((r) => r.type === entry.type && r.global === entry.global)) {
+          merged[kind].push(entry)
+        }
       }
     }
   }
@@ -1218,7 +1257,7 @@ export function mergeStaticPrimitivesCards(cards, warn = console.warn) {
 }
 
 export function readStaticPrimitivesCard(text, warn = console.warn) {
-  const empty = { remotes: [], tools: [], prompts: [], resources: [] }
+  const empty = { transports: [], remotes: [], tools: [], prompts: [], resources: [] }
   if (typeof text !== "string" || text.trim() === "") return empty
 
   let doc
@@ -1242,7 +1281,12 @@ export function readStaticPrimitivesCard(text, warn = console.warn) {
   })
 
   return {
-    // The whole card's transport, so what it declares survives the parse.
+    // Where a page says how to reach its handlers. Since SEP d44bd25a this is
+    // `transports` inside the extension data, because the Server Card's
+    // `Remote.type` enum is streamable-http|sse and `page-global` was never a
+    // valid value there. Top-level `remotes` is what 0.11.1-0.12.2 read, and is
+    // still accepted for one release — see declaredPageGlobal.
+    transports: Array.isArray(ext.transports) ? ext.transports : [],
     remotes: Array.isArray(doc.remotes) ? doc.remotes : [],
     tools: named(ext.tools, "tool"),
     prompts: named(ext.prompts, "prompt"),
