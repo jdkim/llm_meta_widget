@@ -3,6 +3,25 @@
 This file starts at 0.8.0, the first release with a breaking change worth
 calling out. Earlier releases are in the git history (`git log --oneline v0.7.6`).
 
+## 0.13.1
+
+### Documentation: the README caught up with 0.12.x and 0.13.0
+
+Three examples and two explanations still told a page author to declare the
+transport in a top-level `remotes` list. Following the README would have
+produced a card this version warns about and a later version will stop reading.
+They now use `transports` inside the extension data, and say that the list is
+read in order and that the first supported type wins.
+
+The README also said nothing about what the widget does when a turn does not fit
+the model's context, although every part of that behaviour shipped in 0.12.x and
+puts messages in the panel that a page's visitors will read. There is now a
+section describing the three cases — one oversized tool result shortened, older
+results given up, a reference resource refused for its size — with the wording
+the reader actually sees.
+
+No code changed in this release.
+
 ## 0.13.0
 
 ### Changed: a page card declares its transport in `transports`, not `remotes`

@@ -272,8 +272,8 @@ primitive type:
 <script type="application/mcp-static-primitives+json">
 {
   "name": "org.example/your-page",
-  "remotes": [ { "type": "page-global", "global": "mcp" } ],
   "_meta": { "io.modelcontextprotocol/static-primitives": {
+    "transports": [ { "type": "page-global", "global": "mcp" } ],
     "tools": [
       { "name": "add_dictionaries",
         "description": "Add the named dictionaries to the current selection.",
@@ -305,10 +305,17 @@ primitive type:
 A tool's schema may be spelled `inputSchema`, as MCP spells it, or
 `input_schema`. Both are accepted.
 
-`remotes` is how a consumer other than this widget finds your handlers, so the
-global is declared rather than assumed. Leave it out and the widget reads
+`transports` is how a consumer other than this widget finds your handlers, so
+the global is declared rather than assumed. It is a list, and the consumer uses
+the first entry whose `type` it supports; `page-global` is the only type this
+widget supports today. Leave `transports` out and the widget reads
 `window.aiActions`, `window.aiPrompts` and `window.aiResources` instead — see
 "Say where your handlers live".
+
+Widgets up to 0.12.2 read this declaration from a `remotes` list at the top
+level of the card instead. Version 0.13.0 still reads that, and warns, so a page
+and a widget can be updated in either order. Write `transports`; a page may
+declare both while a deployment is still catching up, and `transports` decides.
 
 A page may declare `prompts` in the same block. See [The page card](#the-page-card)
 for prompts, for the size and volatility hints on a resource, and for what
@@ -515,8 +522,8 @@ name the global that holds its handlers. Both are below.
 <script type="application/mcp-static-primitives+json">
 {
   "name": "org.example/your-page",
-  "remotes": [ { "type": "page-global", "global": "mcp" } ],
   "_meta": { "io.modelcontextprotocol/static-primitives": {
+    "transports": [ { "type": "page-global", "global": "mcp" } ],
     "tools":     [ { "name": "set_text", "description": "…", "inputSchema": { } } ],
     "prompts":   [ { "name": "annotate", "description": "Annotate this page" } ],
     "resources": [ { "uri": "page:text", "name": "Text", "description": "the text to annotate",
@@ -526,8 +533,8 @@ name the global that holds its handlers. Both are below.
 </script>
 ```
 
-`name` identifies the card, as it does for a server. `remotes` says where the
-handlers live — see "Say where your handlers live" below. Only the `_meta`
+`name` identifies the card, as it does for a server. `transports` says where
+the handlers live — see "Say where your handlers live" below. Only the `_meta`
 block is required by this widget; the rest is what makes the card readable by
 anything else.
 
@@ -573,8 +580,8 @@ them:
 ```html
 <script type="application/mcp-static-primitives+json">
 { "name": "org.example/your-page",
-  "remotes": [ { "type": "page-global", "global": "mcp" } ],
-  "_meta": { "io.modelcontextprotocol/static-primitives": { "tools": [ ... ] } } }
+  "_meta": { "io.modelcontextprotocol/static-primitives": {
+    "transports": [ { "type": "page-global", "global": "mcp" } ], "tools": [ ... ] } } }
 </script>
 <script>
   window.mcp = {
@@ -721,6 +728,47 @@ A prompt is offered as a button labelled by its `title`. Declare its arguments
 as **optional**, and fill them from page state where you can. An argument the
 visitor must type in makes the button useless to the visitor who needed it most:
 to press it, they would already have to know your form.
+
+## When a turn does not fit the model's context
+
+A model holds a fixed number of tokens. A long conversation, a large reference
+resource and a few big tool results can exceed it, and the provider then refuses
+the whole turn. The widget tries to keep a turn inside the limit instead, and
+tells the reader whenever it has to change something. You do not configure any
+of this, but your page's visitors will see the messages, so it is worth knowing
+what they mean.
+
+The widget learns each model's context window from the server's model list. If
+the server does not report one, none of the behaviour below applies and the turn
+is sent as it is.
+
+**One oversized tool result is shortened.** A single result may use at most 40%
+of the window. A larger one is cut to that size, and the model is told in the
+result itself how much was shown and that it can call the tool again with a
+narrower query. The panel says, for example:
+
+> Shortened an oversized togovar_search_variant result to fit the context:
+> 121,000 tokens, where one result may use at most 51,000. Ask again with a
+> narrower question for the complete result.
+
+**Older tool results are given up when the whole turn is too long.** This is for
+a conversation that has grown over many turns, not for one large result. The
+oldest results go first, one at a time, until the turn fits. The questions, the
+answers and the model's own summaries of what it read are never touched, and a
+dropped result leaves a note in its place so the model knows to ask again.
+
+**A reference resource that does not fit is not attached.** Each turn may carry
+about 6% of the window as reference data — roughly 8 KB for a 32,000-token model
+and 32 KB for a 128,000-token one. A resource larger than that is not fetched at
+all, and the panel says so, naming the resource and both figures. The model is
+not told, because it cannot fetch a resource itself; the reader can act, by
+choosing a model with a larger window or asking you for a smaller resource.
+
+If you publish a large document through MCP, consider offering it in sections
+behind one tool that takes a section name, rather than as a single tool result.
+The list of section names in the tool's own schema costs a few hundred tokens
+and is visible to every client, while a document of tens of kilobytes crowds out
+the conversation it is supposed to support.
 
 ## Further reading
 
