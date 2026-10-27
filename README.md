@@ -61,7 +61,7 @@ Option 3 if it does not.
 
 ```ruby
 # Gemfile
-gem "llm_meta_widget", "~> 0.13.1"
+gem "llm_meta_widget", "~> 0.14.0"
 ```
 
 ```bash
@@ -152,26 +152,25 @@ The widget is a custom element in a single self-contained ES module, so the
 whole integration is two lines of HTML:
 
 ```html
-<script type="module" src="https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.13"></script>
+<script type="module" src="https://cdn.jsdelivr.net/npm/@aibranch/llm-meta-widget@0.14"></script>
 <llm-meta-widget llm-url="https://your-meta-server.example"
                  model="gpt-oss-120b"
                  greeting="Hi — ask me anything about this page."></llm-meta-widget>
 ```
 
-**`@0.13` is a version range, and it stops at 0.13.x on purpose.** You receive
+**`@0.14` is a version range, and it stops at 0.14.x on purpose.** You receive
 bug fixes without editing your page, and a release that breaks your page cannot
 arrive on its own.
 
-Moving to 0.14 is therefore a change you make yourself. Read
+Moving to 0.15 is therefore a change you make yourself. Read
 [CHANGELOG.md](CHANGELOG.md) before you do, because this is where what your page
 must provide can change. For example, 0.10.0 changed how the widget finds a page
 card: by media type rather than by element id. A page that declared its card the
 new way while still loading `@0.9` lost every tool, prompt and resource it had
 declared. Nothing failed, anywhere. The CHANGELOG entry for 0.10.0 describes it.
 
-0.13.0 moves where a page declares its transport. That one is safe to take
-first, because 0.13.x still reads the old spelling and warns; the page can move
-afterwards.
+0.13.0 moved where a page declares its transport, and 0.14.0 stopped reading
+the old spelling. Move your card to `transports` before taking 0.14.x.
 
 A Rails app is protected from that mismatch, because the `Gemfile` will not
 resolve a widget version the page cannot use. A page that loads the widget from
