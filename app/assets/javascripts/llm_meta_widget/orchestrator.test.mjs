@@ -2245,8 +2245,15 @@ test("a declared global the page never defines is reported", () => {
   // Nearly always load order, or a script that threw before defining it — the
   // failure we hit for real on 2026-10-15 was exactly that shape.
   const said = []
-  pageHandlers({ card: CARD_WITH_GLOBAL, scope: {}, legacy: { tools: "aiActions" },
-                 warn: (m) => said.push(m) })
+  const handlers = pageHandlers({ card: CARD_WITH_GLOBAL, scope: {},
+                                  legacy: { tools: "aiActions" }, warn: (m) => said.push(m) })
+
+  // Nothing is said when the card is read: at that point the page's scripts may
+  // not have run, so a missing global is not yet news. It is news when a
+  // handler is actually wanted.
+  assert.deepEqual(said, [])
+
+  void handlers.tools
 
   assert.equal(said.length, 1)
   assert.match(said[0], /window\.mcp is not defined/)
@@ -2730,7 +2737,52 @@ test("two blocks naming different globals for one type is reported, first kept",
 
   assert.equal(merged.transports.length, 1)
   assert.equal(declaredPageGlobal(merged, () => {}), "first")
-  assert.match(said.join(" "), /two blocks declare different page-global globals/)
+  assert.match(said.join(" "), /page-global transport is declared more than once/)
+})
+
+// SEP: handler availability is a runtime binding. An HTML-delivered card is
+// parsed from the DOM before the page's own scripts have necessarily run, so
+// resolving the global once at discovery and keeping the result is wrong — the
+// page would silently have no handlers for the rest of its life.
+
+test("a global defined after the card was read is still found", () => {
+  const scope = {}
+  const handlers = pageHandlers({ card: CARD_WITH_GLOBAL, scope,
+                                  legacy: { tools: "aiActions" }, warn: () => {} })
+
+  assert.deepEqual(handlers.tools, {}, "nothing to dispatch to yet")
+
+  // the page's script runs now, as it would with defer, a module, or an
+  // injected consumer that got there first
+  scope.mcp = { tools: { annotate: () => "ok" } }
+
+  assert.equal(typeof handlers.tools.annotate, "function",
+               "the handler map must be resolved at dispatch, not cached at discovery")
+})
+
+test("a global that disappears falls back again rather than serving a stale map", () => {
+  const scope = { mcp: { tools: { t: () => "ok" } }, aiActions: { legacy: () => "old" } }
+  const handlers = pageHandlers({ card: CARD_WITH_GLOBAL, scope,
+                                  legacy: { tools: "aiActions" }, warn: () => {} })
+
+  assert.equal(typeof handlers.tools.t, "function")
+  delete scope.mcp
+
+  assert.equal(typeof handlers.tools.legacy, "function", "re-resolved, not remembered")
+})
+
+test("the missing-global report is said once, not on every dispatch", () => {
+  // It now fires on access, and a page that never defines its global would
+  // otherwise repeat it for every tool, prompt and resource lookup, every turn.
+  const said = []
+  const handlers = pageHandlers({ card: CARD_WITH_GLOBAL, scope: {},
+                                  legacy: { tools: "aiActions" }, warn: (m) => said.push(m) })
+
+  void handlers.tools
+  void handlers.tools
+  void handlers.prompts
+
+  assert.equal(said.length, 1, said.join(" | "))
 })
 
 test("the report about the old spelling reaches a caller's own warn", () => {

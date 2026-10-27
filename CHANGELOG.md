@@ -3,6 +3,44 @@
 This file starts at 0.8.0, the first release with a breaking change worth
 calling out. Earlier releases are in the git history (`git log --oneline v0.7.6`).
 
+## 0.15.0
+
+### The declared global is resolved when a handler is needed, not at startup
+
+A page card is parsed from the DOM before the page's own scripts have
+necessarily run, and a consumer may be injected before them. Until now the
+widget looked up the global named by the card's `page-global` transport once, at
+startup, and kept the result: a page whose handler script ran later — with
+`defer`, as an ES module, or from a `<script>` near the end of the document —
+got no handlers at all for the rest of its life, with only a console warning to
+explain it.
+
+The lookup now happens each time a handler is wanted, so script order no longer
+matters. A global defined after the card was read is found; a global that
+disappears falls back to the older globals again instead of serving a stale map.
+
+The "declares a global the page never defines" message moved with it. At startup
+it was a false alarm, because the defining script may simply not have run yet;
+it is now said when a handler is actually wanted, and said once rather than on
+every lookup.
+
+This is what SEP-0000 asks of a consumer: handler availability is a runtime
+binding, and the burden sits on the consumer, which is the side that can know
+its own injection timing.
+
+### Two smaller fixes from the same conformance audit
+
+- A transport type declared twice was reported as "two blocks declare different
+  globals" even when a single block declared it twice. The message now covers
+  both cases.
+- A card addressed by `page_card_id:` — the escape hatch for a host that cannot
+  set the media type — was read without the merge step, which is where a
+  duplicated transport is caught. It was therefore the one path where that
+  authoring error went unreported. It now goes through the same check.
+
+Nothing a conformant page declares behaves differently, and no card needs
+changing.
+
 ## 0.14.0
 
 ### Breaking: a transport declared in top-level `remotes` is no longer read

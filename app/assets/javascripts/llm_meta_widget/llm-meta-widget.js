@@ -708,24 +708,42 @@ function declaredPageGlobal(card, warn = console.warn) {
 }
 function pageHandlers({ card, scope = {}, legacy = {}, warn = console.warn } = {}) {
   const name = declaredPageGlobal(card, warn);
-  const declared = name ? scope[name] : null;
-  if (name && !declared) {
-    warn(`[llm-meta-widget] the page card declares global "${name}", but window.${name} is not defined \u2014 is the script that defines it loaded, and did it run?`);
-  }
   const isMap = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  const said = /* @__PURE__ */ new Set();
+  const sayOnce = (key, message) => {
+    if (said.has(key)) return;
+    said.add(key);
+    warn(message);
+  };
   const pick = (kind, legacyName) => {
+    const declared = name ? scope[name] : null;
+    if (name && !declared) {
+      sayOnce(
+        "missing",
+        `[llm-meta-widget] the page card declares global "${name}", but window.${name} is not defined \u2014 is the script that defines it loaded, and did it run?`
+      );
+    }
     const fromGlobal = declared ? declared[kind] : void 0;
     if (isMap(fromGlobal)) return fromGlobal;
     if (declared && fromGlobal !== void 0 && !isMap(fromGlobal)) {
-      warn(`[llm-meta-widget] window.${name}.${kind} is ${Array.isArray(fromGlobal) ? "an array" : typeof fromGlobal}; it must be an object keyed by ${kind === "resources" ? "uri" : "name"}`);
+      sayOnce(
+        `shape:${kind}`,
+        `[llm-meta-widget] window.${name}.${kind} is ${Array.isArray(fromGlobal) ? "an array" : typeof fromGlobal}; it must be an object keyed by ${kind === "resources" ? "uri" : "name"}`
+      );
     }
     return legacyName && scope[legacyName] || {};
   };
   return {
     global: name,
-    tools: pick("tools", legacy.tools),
-    prompts: pick("prompts", legacy.prompts),
-    resources: pick("resources", legacy.resources)
+    get tools() {
+      return pick("tools", legacy.tools);
+    },
+    get prompts() {
+      return pick("prompts", legacy.prompts);
+    },
+    get resources() {
+      return pick("resources", legacy.resources);
+    }
   };
 }
 function mergeStaticPrimitivesCards(cards, warn = console.warn) {
@@ -736,7 +754,7 @@ function mergeStaticPrimitivesCards(cards, warn = console.warn) {
         if (!entry || typeof entry.type !== "string") continue;
         const clash = merged[kind].find((r) => r.type === entry.type && r.global !== entry.global);
         if (clash) {
-          warn(`[llm-meta-widget] two blocks declare different ${entry.type} globals ("${clash.global}" and "${entry.global}"); using "${clash.global}"`);
+          warn(`[llm-meta-widget] the ${entry.type} transport is declared more than once, with different globals ("${clash.global}" and "${entry.global}"); using "${clash.global}". One block may declare it twice, or two blocks may disagree`);
           continue;
         }
         if (!merged[kind].some((r) => r.type === entry.type && r.global === entry.global)) {
@@ -4163,7 +4181,9 @@ function boot(cfg) {
     );
   } else {
     var pageCardEl = document.getElementById(PAGE_CARD_ID);
-    pageCard = readStaticPrimitivesCard(pageCardEl ? pageCardEl.textContent : null);
+    pageCard = mergeStaticPrimitivesCards(
+      [readStaticPrimitivesCard(pageCardEl ? pageCardEl.textContent : null)]
+    );
   }
   var handlers = pageHandlers({
     card: pageCard,

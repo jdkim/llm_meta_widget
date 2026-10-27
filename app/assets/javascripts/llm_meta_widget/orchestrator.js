@@ -1165,19 +1165,36 @@ export function declaredPageGlobal(card, warn = console.warn) {
 // keeps working instead of losing the primitives it has not moved yet.
 export function pageHandlers({ card, scope = {}, legacy = {}, warn = console.warn } = {}) {
   const name = declaredPageGlobal(card, warn)
-  const declared = name ? scope[name] : null
+  const isMap = (v) => !!v && typeof v === "object" && !Array.isArray(v)
 
-  // A card that names a global the page never defines is almost always a load
-  // order problem, or a script that threw before it got there. Falling back in
-  // silence hides that: the page then behaves as if it had declared nothing,
-  // and the first symptom is a prompt or tool that "has no handler".
-  if (name && !declared) {
-    warn(`[llm-meta-widget] the page card declares global "${name}", but window.${name} ` +
-         "is not defined — is the script that defines it loaded, and did it run?")
+  // Each said at most once. These now fire on dispatch rather than at mount, so
+  // a page that never defines its global would otherwise repeat them every turn.
+  const said = new Set()
+  const sayOnce = (key, message) => {
+    if (said.has(key)) return
+    said.add(key)
+    warn(message)
   }
 
-  const isMap = (v) => !!v && typeof v === "object" && !Array.isArray(v)
   const pick = (kind, legacyName) => {
+    // Resolved HERE, when a handler is wanted, not when the card was read. The
+    // card is parsed from the DOM before the page's own scripts have
+    // necessarily run, and a consumer may be injected before them, so a global
+    // that is missing at discovery may well be defined by the time a tool is
+    // called. Caching that first lookup turned a load-order detail into a page
+    // that silently had no handlers for the rest of its life.
+    const declared = name ? scope[name] : null
+
+    // A card that names a global the page never defines is almost always a load
+    // order problem, or a script that threw before it got there. Falling back in
+    // silence hides that: the page then behaves as if it had declared nothing,
+    // and the first symptom is a prompt or tool that "has no handler".
+    if (name && !declared) {
+      sayOnce("missing",
+              `[llm-meta-widget] the page card declares global "${name}", but window.${name} ` +
+              "is not defined — is the script that defines it loaded, and did it run?")
+    }
+
     // `declared ? … : undefined`, not `declared && …`: the second yields null
     // when nothing is declared, and `typeof null === "object"`, so the check
     // below then warned about "window.null.tools" on every page with no card.
@@ -1186,16 +1203,20 @@ export function pageHandlers({ card, scope = {}, legacy = {}, warn = console.war
     // An array is the mistake worth naming: it passes a typeof check, so it
     // would be used as a map and answer every lookup with undefined.
     if (declared && fromGlobal !== undefined && !isMap(fromGlobal)) {
-      warn(`[llm-meta-widget] window.${name}.${kind} is ${Array.isArray(fromGlobal) ? "an array" : typeof fromGlobal}; ` +
-           `it must be an object keyed by ${kind === "resources" ? "uri" : "name"}`)
+      sayOnce(`shape:${kind}`,
+              `[llm-meta-widget] window.${name}.${kind} is ${Array.isArray(fromGlobal) ? "an array" : typeof fromGlobal}; ` +
+              `it must be an object keyed by ${kind === "resources" ? "uri" : "name"}`)
     }
     return (legacyName && scope[legacyName]) || {}
   }
+
+  // Getters, so each dispatch re-resolves. The call sites read
+  // `handlers.tools` at the moment they need it, which is what makes this work.
   return {
     global: name,
-    tools: pick("tools", legacy.tools),
-    prompts: pick("prompts", legacy.prompts),
-    resources: pick("resources", legacy.resources)
+    get tools() { return pick("tools", legacy.tools) },
+    get prompts() { return pick("prompts", legacy.prompts) },
+    get resources() { return pick("resources", legacy.resources) }
   }
 }
 
@@ -1224,8 +1245,9 @@ export function mergeStaticPrimitivesCards(cards, warn = console.warn) {
         if (!entry || typeof entry.type !== "string") continue
         const clash = merged[kind].find((r) => r.type === entry.type && r.global !== entry.global)
         if (clash) {
-          warn(`[llm-meta-widget] two blocks declare different ${entry.type} globals ` +
-               `("${clash.global}" and "${entry.global}"); using "${clash.global}"`)
+          warn(`[llm-meta-widget] the ${entry.type} transport is declared more than once, ` +
+               `with different globals ("${clash.global}" and "${entry.global}"); using ` +
+               `"${clash.global}". One block may declare it twice, or two blocks may disagree`)
           continue
         }
         if (!merged[kind].some((r) => r.type === entry.type && r.global === entry.global)) {

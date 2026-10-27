@@ -387,7 +387,11 @@ function boot(cfg) {
   			}));
   	} else {
   		var pageCardEl = document.getElementById(PAGE_CARD_ID);
-  		pageCard = readStaticPrimitivesCard(pageCardEl ? pageCardEl.textContent : null);
+  		// Through the merge as well, with one card: that is where a transport
+  		// declared twice is caught, and the escape hatch should not be the one
+  		// path where an authoring error goes unreported.
+  		pageCard = mergeStaticPrimitivesCards(
+  			[ readStaticPrimitivesCard(pageCardEl ? pageCardEl.textContent : null) ]);
   	}
   	// Where the page's handlers live. The card may declare a global, which is
 	// the only form an outside consumer can discover; the three legacy globals

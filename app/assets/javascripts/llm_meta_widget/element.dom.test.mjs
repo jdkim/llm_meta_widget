@@ -857,6 +857,35 @@ test("a tool declared with a page-global transport dispatches to that global", a
   delete window.mcp
 })
 
+test("the escape-hatch card is checked for a duplicate transport too", async () => {
+  // boot() routes even a single typed block through the merge, which is where a
+  // transport declared twice is caught and the first kept. The id-addressed
+  // escape hatch used to skip the merge, which made it the one path where that
+  // authoring error went unreported.
+  document.body.innerHTML = ""
+  putCard({
+    transports: [ { type: "page-global", global: "first" },
+                  { type: "page-global", global: "second" } ],
+    tools: [ { name: "t", description: "d", inputSchema: {} } ]
+  })
+
+  const said = []
+  const realWarn = console.warn
+  console.warn = (m) => said.push(String(m))
+  try {
+    const el = document.createElement("llm-meta-widget")
+    for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "" })) {
+      el.setAttribute(k, v)
+    }
+    document.body.appendChild(el)
+    await tick(60)
+  } finally {
+    console.warn = realWarn
+  }
+
+  assert.match(said.join(" "), /declared more than once/)
+})
+
 test("a prompt resolves through the declared global", async () => {
   window.mcp = { prompts: { annotate: () => "FROM THE GLOBAL" } }
   await mountWithGlobal({ prompts: [ { name: "annotate", description: "Annotate" } ] })

@@ -602,6 +602,18 @@ so no other consumer can rely on them. Each kind falls back on its own, so you
 can move tools into the declared global and leave prompts and resources where
 they are.
 
+**Script order does not matter.** The widget looks up your global at the moment
+it needs a handler, not when it reads the card. The script that defines
+`window.mcp` may therefore run before or after the widget loads: a `defer`
+attribute, an ES module, or a `<script>` near the end of the page are all fine.
+If a handler is wanted while the global is still undefined, the widget says so
+in the browser console once, and falls back to the older globals for that call.
+
+Before 0.15.0 the lookup happened once at startup, so a page whose handler
+script ran later got no handlers at all for the rest of its life, with only a
+console warning to say why. If you are pinned below 0.15.0, define your global
+before the widget's own script tag.
+
 **The card is found by its media type.** A client matches
 `script[type="application/mcp-static-primitives+json"]`, so the element needs no
 `id`. This is how a client that was never told about your page can still read
