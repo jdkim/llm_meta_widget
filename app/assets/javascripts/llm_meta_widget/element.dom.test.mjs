@@ -22,6 +22,11 @@ const HUB = "https://hub.example"
 let hubServers = []
 let streamScript = null
 let sentBodies = []
+// Every fetch the element makes, so a test can assert HOW it asked and not
+// only what came back. The 304 bug was invisible to the payload alone.
+let fetchLog = []
+// A status to answer /api/llms with instead of 200, for one test.
+let hubLlmsStatus = null
 // Set to override the /api/llms answer for one test.
 let hubLlms = null
 // What a hub-proxied tool call answers, for a test that needs a big one.
@@ -41,6 +46,7 @@ function installGlobals() {
   globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0)
   globalThis.fetch = async (url, init = {}) => {
     const u = String(url)
+    fetchLog.push({ url: u, init })
     if (u.includes("single_llm_calls")) {
       sentBodies.push(JSON.parse(init.body || "{}"))
       // A test can script the stream, one entry per round, to exercise a tool
@@ -77,7 +83,15 @@ function installGlobals() {
     	headers: { get: (k) => (String(k).toLowerCase() === "content-type" ? "application/json" : null) },
     	json: async () => body, text: async () => JSON.stringify(body)
     })
-    if (u.includes("/api/llms"))        return json(hubLlms || { llms: [ { models: [ { value: "m1" }, { value: "m2" } ] } ] })
+    if (u.includes("/api/llms")) {
+    	if (hubLlmsStatus && hubLlmsStatus !== 200) {
+    		// A 304 carries no body, which is the whole point: Response.ok is
+    		// false and r.json() would throw.
+    		return { ok: false, status: hubLlmsStatus, headers: { get: () => null },
+    		         json: async () => { throw new Error("no body on " + hubLlmsStatus) } }
+    	}
+    	return json(hubLlms || { llms: [ { models: [ { value: "m1" }, { value: "m2" } ] } ] })
+    }
     if (/\/api\/mcp_servers\/[^/]+\/tools/.test(u)) {
       const uuid = u.match(/mcp_servers\/([^/]+)\/tools/)[1]
       const s = hubServers.find((x) => x.uuid === uuid)
@@ -128,7 +142,7 @@ before(() => { assert.ok(customElements.get("llm-meta-widget"), "the bundle shou
 // without this a test restores the previous test's conversation — which made an
 // assertion about "the saved question" read a question from two tests ago.
 beforeEach(() => {
-  hubServers = []; sentBodies = []; hubLlms = null; streamScript = null; hubToolResult = { ok: true }; hostManifest = { servers: [] }; hostResources = []
+  hubServers = []; sentBodies = []; hubLlms = null; fetchLog = []; hubLlmsStatus = null; streamScript = null; hubToolResult = { ok: true }; hostManifest = { servers: [] }; hostResources = []
   try { window.sessionStorage.clear() } catch { /* storage may be unavailable */ }
 })
 
@@ -992,6 +1006,64 @@ test("what the assistant said before the tool call is in storage too", async () 
 
 // --- budgeting the turn against the model's real window -----------------
 //
+// A repeat visit is the normal case, and it was the broken one. The hub answers
+// /api/llms and /api/mcp_servers with an ETag and must-revalidate, so the second
+// page load sends a conditional request and gets 304 Not Modified. Response.ok
+// is false for a 304, and the handlers turned that into an empty payload: no
+// context window, so the resource budget fell to its floor and both tool-result
+// truncation and eviction stood down, and no hub tools, so the panel said there
+// were none. It worked on a first load and silently stopped on every one after.
+
+test("asks for the model list without a conditional request", async () => {
+  document.body.innerHTML = ""
+  const el = document.createElement("llm-meta-widget")
+  for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "" })) {
+    el.setAttribute(k, v)
+  }
+  document.body.appendChild(el)
+  await tick(60)
+
+  const llms = fetchLog.find((c) => c.url.includes("/api/llms"))
+  assert.ok(llms, "the element must ask for the model list at all")
+  assert.equal(llms.init && llms.init.cache, "no-store",
+               "a cached ETag would make the browser send a conditional request and get a bodyless 304")
+})
+
+test("asks for the hub tool list without a conditional request", async () => {
+  document.body.innerHTML = ""
+  const el = document.createElement("llm-meta-widget")
+  for (const [ k, v ] of Object.entries({ "llm-url": HUB, "tool-hub-url": HUB, model: "m1", "well-known-urls": "" })) {
+    el.setAttribute(k, v)
+  }
+  document.body.appendChild(el)
+  await tick(60)
+
+  const servers = fetchLog.find((c) => c.url.includes("/api/mcp_servers") && !c.url.includes("/tools"))
+  assert.ok(servers, "the element must ask for the hub tool list at all")
+  assert.equal(servers.init && servers.init.cache, "no-store")
+})
+
+test("says so when the model list cannot be read, instead of budgeting at the floor in silence", async () => {
+  hubLlmsStatus = 304
+  const said = []
+  const realWarn = console.warn
+  console.warn = (m) => said.push(String(m))
+  try {
+    document.body.innerHTML = ""
+    const el = document.createElement("llm-meta-widget")
+    for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "" })) {
+      el.setAttribute(k, v)
+    }
+    document.body.appendChild(el)
+    await tick(60)
+  } finally {
+    console.warn = realWarn
+  }
+
+  assert.match(said.join(" "), /\/api\/llms answered 304/)
+  assert.match(said.join(" "), /context window is unknown/)
+})
+
 // These drive the whole path: /api/llms reports a window, the element hands it
 // to the loop, and the loop gives up an old tool result rather than letting the
 // provider refuse the round. A unit test of evictOldToolResults cannot see any

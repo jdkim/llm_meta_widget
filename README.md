@@ -61,7 +61,7 @@ Option 3 if it does not.
 
 ```ruby
 # Gemfile
-gem "llm_meta_widget", "~> 0.15.0"
+gem "llm_meta_widget", "~> 0.15.1"
 ```
 
 ```bash

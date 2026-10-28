@@ -3,6 +3,32 @@
 This file starts at 0.8.0, the first release with a breaking change worth
 calling out. Earlier releases are in the git history (`git log --oneline v0.7.6`).
 
+## 0.15.1
+
+### A repeat visit no longer loses the model's context window or the hub tools
+
+The hub answers `/api/llms` and `/api/mcp_servers` with an ETag and
+`must-revalidate`, so a browser revalidated them on the second page load and
+got `304 Not Modified`. `Response.ok` is false for a 304, and both handlers
+turned that into an empty payload.
+
+Nothing announced it. Without the model's context window the resource budget
+fell to its 8 KB floor, so a page's reference data was reported as skipped even
+when it would have fitted; and tool-result truncation and oldest-result
+eviction both stood down, because each returns its input unchanged when it has
+no window to spend. An empty hub list meanwhile showed as "No hub-registered
+tools available". It all worked on a first load and stopped on every one after,
+which is why a hard reload always looked fine.
+
+Both requests now set `cache: "no-store"`, so no conditional request is sent
+and the answer always carries a body. A response that is not ok is reported in
+the browser console, naming what is lost, rather than being treated as an empty
+result.
+
+The hub stopped sending those ETags as well, so this release is not required to
+fix a page served by an up-to-date hub. It matters for any other server that
+does send them, and for making the next failure audible.
+
 ## 0.15.0
 
 ### The declared global is resolved when a handler is needed, not at startup
