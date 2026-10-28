@@ -4270,8 +4270,10 @@ function boot(cfg) {
         if (flat.length > 1) modelPicker.style.display = "";
       }));
     } else if (ENABLE_MODEL_PICKER && modelPicker) {
-      tasks.push(fetch(LLM_BASE + "/api/llms", { headers: { "Accept": "application/json" } }).then(function(r) {
-        return r.ok ? r.json() : { llms: [] };
+      tasks.push(fetch(LLM_BASE + "/api/llms", { headers: { "Accept": "application/json" }, cache: "no-store" }).then(function(r) {
+        if (r.ok) return r.json();
+        console.warn("[llm-meta-widget] /api/llms answered " + r.status + "; the model context window is unknown, so reference data is budgeted at the floor and oversized tool results are not trimmed");
+        return { llms: [] };
       }).then(function(payload) {
         llmsPayload = payload;
         modelWindow = modelWindowFrom(payload, MODEL);
@@ -4304,8 +4306,10 @@ function boot(cfg) {
       }));
     }
     if (ENABLE_TOOL_PICKER && toolsListEl) {
-      tasks.push(fetch(TOOL_HUB_BASE + "/api/mcp_servers", { headers: { "Accept": "application/json" } }).then(function(r) {
-        return r.ok ? r.json() : { mcp_servers: [] };
+      tasks.push(fetch(TOOL_HUB_BASE + "/api/mcp_servers", { headers: { "Accept": "application/json" }, cache: "no-store" }).then(function(r) {
+        if (r.ok) return r.json();
+        console.warn("[llm-meta-widget] /api/mcp_servers answered " + r.status + "; hub-registered tools will be listed as unavailable");
+        return { mcp_servers: [] };
       }).then(function(payload) {
         hubMcpServers = (payload.mcp_servers || []).filter(function(s) {
           return anyAllowedByAllowlist(s.name, HUB_TOOLS_ALLOWLIST);

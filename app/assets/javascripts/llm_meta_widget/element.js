@@ -503,8 +503,21 @@ function boot(cfg) {
   				if (flat.length > 1) modelPicker.style.display = "";
   			}));
   		} else if (ENABLE_MODEL_PICKER && modelPicker) {
-  			tasks.push(fetch(LLM_BASE + "/api/llms", { headers: { "Accept": "application/json" } })
-  				.then(function(r) { return r.ok ? r.json() : { llms: [] }; })
+  			// cache: "no-store" so the browser never sends a conditional request. The
+  			// hub answers /api/llms with an ETag and must-revalidate, so a REPEAT visit
+  			// got 304 Not Modified — and Response.ok is false for a 304, which became
+  			// an empty payload here. The model's context window was then unknown, so
+  			// the resource budget fell to its 8 KB floor and BOTH tool-result
+  			// truncation and eviction stood down, each returning unchanged without a
+  			// window. It worked on a first load and quietly stopped on every one after.
+  			tasks.push(fetch(LLM_BASE + "/api/llms", { headers: { "Accept": "application/json" }, cache: "no-store" })
+  				.then(function(r) {
+  					if (r.ok) return r.json();
+  					console.warn("[llm-meta-widget] /api/llms answered " + r.status +
+  					             "; the model context window is unknown, so reference data is" +
+  					             " budgeted at the floor and oversized tool results are not trimmed");
+  					return { llms: [] };
+  				})
   				.then(function(payload) {
   					// /api/llms is heterogeneous per family:
   					//   - OpenAI/Anthropic/Google: `models: [{ name, display_name, ... }]`
@@ -551,8 +564,16 @@ function boot(cfg) {
   		}
 
   		if (ENABLE_TOOL_PICKER && toolsListEl) {
-  			tasks.push(fetch(TOOL_HUB_BASE + "/api/mcp_servers", { headers: { "Accept": "application/json" } })
-  				.then(function(r) { return r.ok ? r.json() : { mcp_servers: [] }; })
+  			// Same reason as /api/llms above: a 304 on a repeat visit emptied this, and
+  			// the panel then said "No hub-registered tools available" although the hub
+  			// had them.
+  			tasks.push(fetch(TOOL_HUB_BASE + "/api/mcp_servers", { headers: { "Accept": "application/json" }, cache: "no-store" })
+  				.then(function(r) {
+  					if (r.ok) return r.json();
+  					console.warn("[llm-meta-widget] /api/mcp_servers answered " + r.status +
+  					             "; hub-registered tools will be listed as unavailable");
+  					return { mcp_servers: [] };
+  				})
   				.then(function(payload) {
   					hubMcpServers = (payload.mcp_servers || []).filter(function(s) {
   						return anyAllowedByAllowlist(s.name, HUB_TOOLS_ALLOWLIST);
