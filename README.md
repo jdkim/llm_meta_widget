@@ -807,3 +807,9 @@ the conversation it is supposed to support.
 ## License
 
 Apache-2.0.
+
+
+The [standalone anonymous MCP E2E fixture](test/e2e/README.md#standalone-anonymous-remote-mcp-round-trip)
+checks a static custom element against a live hub, or an explicit mock hub for
+wiring checks. It validates captured tool-result history rather than the model's
+claim that it called a tool, and leaves model generation defaults unchanged.

@@ -15,6 +15,7 @@ minutes per run: most of it is waiting for the model.
 
 | Script | What it proves |
 | --- | --- |
+| `remote_tool_test.rb` | A standalone static custom element sends an anonymous turn, executes one hub-proxied MCP tool, and returns the complete result to the next LLM turn |
 | `page_actions_test.rb` | A tool call changes real page state (`add_dictionaries` moves the form), and a host MCP tool answers from the server (`find_ids` → UBERON_0000945) |
 | `prompts_and_resources_test.rb` | The prompt template renders and runs, its arguments come from page state, and the resource is attached on turn 1 only — then again after Clear |
 | `resource_gate_test.rb` | A resource the server declares as over-budget or `on-demand` is never fetched at all |
@@ -59,3 +60,56 @@ same widget but needs its own readers and fixtures.
 The Selenium profile directory is created beside the script rather than in
 `/tmp`, because snap-confined Chromium cannot write there and fails with a
 silent 120-second timeout.
+
+
+## Standalone anonymous remote MCP round trip
+
+This fixture serves the committed custom-element bundle directly, without a
+Rails host or ERB rendering. It does not override generation settings: the hub
+catalog/provider defaults and current context-window management remain in charge.
+No production widget behavior is changed by this fixture.
+
+For a live hub with the guide tool active and public to anonymous visitors:
+
+```sh
+HUB_URL=http://localhost:3000 MODEL=gpt-oss-120b \
+  bundle exec ruby test/e2e/remote_tool_test.rb
+```
+
+The model must support tools and be permitted by the hub's anonymous policy.
+`MCP_SERVER` (default TogoMCP), `MCP_TOOL` (default TogoMCP_Usage_Guide),
+`WIDGET_PORT` (default 3001), `E2E_TIMEOUT` (seconds, default 600), and
+`E2E_OUTPUT_DIR` are configurable. The live hub must allow the fixture's exact
+origin, `http://127.0.0.1:3001`, in CORS. This run consumes real model/tool usage.
+Only use an environment you are authorized to exercise.
+
+For deterministic wiring checks without any live model or MCP server:
+
+```sh
+MOCK_HUB=1 bundle exec ruby test/e2e/remote_tool_test.rb
+```
+
+Mock mode returns a 117KB Unicode tool result and a deterministic answer. It
+proves client wiring, not live model behavior, remote MCP transport or cross-origin
+CORS. The normal mode calls the configured hub directly; there is no local API
+proxy hiding CORS failures.
+
+With `SERVE_ONLY=1`, Selenium is not loaded and another browser can drive the
+same static page. Start a fresh conversation with Clear if needed. Open the chat, expand Tools
+and the server row, select **only** the named guide checkbox, and
+send the prompt shown on the page. The local server captures wire evidence at
+`tmp/remote-tool-e2e/wire.json`. Validate that capture with:
+
+```sh
+ruby test/e2e/remote_tool_wire.rb tmp/remote-tool-e2e/wire.json
+```
+
+The validator checks exactly two successful anonymous LLM turns, one MCP proxy
+call, order, selected tool ID, empty arguments, matching tool-call history, full
+untruncated result equality and a nonempty final answer without SSE errors. It
+also checks that no fixed Ollama generation options were injected. The validator's
+positive and rejection cases run without a browser in `npm run test:rb`.
+Automatic Selenium runs additionally write `summary.json` (marked mock/live) and
+`remote_tool.png`. Captures contain prompts and full tool results; authorization
+values are redacted, and authenticated requests fail validation. Keep artifacts
+out of version control. Each run overwrites the output directory's evidence.
