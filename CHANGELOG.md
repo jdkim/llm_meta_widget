@@ -3,6 +3,31 @@
 This file starts at 0.8.0, the first release with a breaking change worth
 calling out. Earlier releases are in the git history (`git log --oneline v0.7.6`).
 
+## 0.15.2
+
+### A page that hides the model picker now learns the context window too
+
+Both requests for the hub's model list sat inside the branches that fill the
+model picker. A page that pins one model and hides the picker therefore never
+learned that model's context window — and hiding the picker is a reasonable
+choice when the host has already chosen the model.
+
+Without a window the resource budget falls back to its 8 KB floor, so a page's
+reference data is reported as skipped even when it would have fitted, and
+oversized tool results are neither trimmed nor evicted, because each of those
+steps returns its input unchanged when it has no window to spend. Release
+0.15.1 could not even warn about it: the warning there fires when a request
+comes back unusable, and here no request was made.
+
+The model list is now fetched whenever the hub is the provider, and only
+filling the picker remains conditional. A page configured to talk straight to
+Ollama is left alone, since there is no such endpoint to ask.
+
+The widget also says so once, in the browser console, if a turn starts with no
+known window — naming the model and what is lost. Three different causes have
+produced an unknown window so far, and each was reported only where it
+happened, if at all.
+
 ## 0.15.1
 
 ### A repeat visit no longer loses the model's context window or the hub tools
