@@ -1014,6 +1014,94 @@ test("what the assistant said before the tool call is in storage too", async () 
 // truncation and eviction stood down, and no hub tools, so the panel said there
 // were none. It worked on a first load and silently stopped on every one after.
 
+// Found while reviewing the standalone E2E fixture (widget PR #1), whose page
+// sets enable-model-picker="false" — a sensible choice when the host pins one
+// model. Both /api/llms fetches used to sit inside the picker branches, so such
+// a page never learned the model's context window: the resource budget fell to
+// its 8 KB floor and tool-result truncation and eviction both stood down, each
+// returning its input unchanged without a window. Unlike the 304 version of
+// this bug, no warning was even possible, because no request was made to fail.
+
+test("says so at turn time when no context window is known", async () => {
+  // The audible backstop. Three different causes have produced an unknown
+  // window — a 304 read as an empty payload, a page that hid the model picker,
+  // and a model the hub does not list — and the first two were silent for days
+  // because each was reported, if at all, only where it happened. This fires
+  // wherever the cause was, at the moment it affects an answer.
+  hubLlms = { llms: [ { family: "bedrock", models: [ { name: "someone-else", max_input_tokens: 128000 } ] } ] }
+  const said = []
+  const realWarn = console.warn
+  console.warn = (m) => said.push(String(m))
+  try {
+    document.body.innerHTML = ""
+    const el = document.createElement("llm-meta-widget")
+    for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "" })) {
+      el.setAttribute(k, v)
+    }
+    document.body.appendChild(el)
+    await tick(60)
+    const panel = document.getElementById("llm-meta-widget-chat")
+    const input = panel.querySelector(".lmw-input")
+    input.value = "hello"
+    input.dispatchEvent(new window.Event("input", { bubbles: true }))
+    panel.querySelector(".lmw-form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+    await tick(120)
+  } finally {
+    console.warn = realWarn
+  }
+
+  assert.match(said.join(" "), /no context window known for m1/)
+})
+
+test("learns the context window even when the page hides the model picker", async () => {
+  hubLlms = { llms: [ { family: "bedrock", models: [
+    { name: "m1", supports_tools: true, max_input_tokens: 128000 }
+  ] } ] }
+  document.body.innerHTML = ""
+  const el = document.createElement("llm-meta-widget")
+  for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "",
+                                          "enable-model-picker": "false" })) {
+    el.setAttribute(k, v)
+  }
+  document.body.appendChild(el)
+  await tick(60)
+
+  const llms = fetchLog.find((c) => c.url.includes("/api/llms"))
+  assert.ok(llms, "the window is what every budget is derived from, picker or no picker")
+
+  // A no-picker page must also be able to hold a conversation, which is the
+  // part a visitor would notice. Note what this does NOT cover: removing the
+  // guard below on the picker-population code throws a TypeError after this
+  // request has gone out, which skips the rest of boot — but the only thing
+  // after it is the picker's change handler, which such a page has no use for,
+  // so a turn still works and no assertion here can see the difference.
+  const panel = document.getElementById("llm-meta-widget-chat")
+  const input = panel.querySelector(".lmw-input")
+  input.value = "hello"
+  input.dispatchEvent(new window.Event("input", { bubbles: true }))
+  panel.querySelector(".lmw-form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+  await tick(120)
+
+  assert.ok(sentBodies.length > 0, "a page with no picker must still be able to send a turn")
+})
+
+test("still fills the picker when the page shows one", async () => {
+  hubLlms = { llms: [ { family: "ollama", available_models: [
+    { value: "m1", label: "m1", supports_tools: true, max_input_tokens: 32768 },
+    { value: "m2", label: "m2", supports_tools: true, max_input_tokens: 32768 }
+  ] } ] }
+  document.body.innerHTML = ""
+  const el = document.createElement("llm-meta-widget")
+  for (const [ k, v ] of Object.entries({ "llm-url": HUB, model: "m1", "well-known-urls": "" })) {
+    el.setAttribute(k, v)
+  }
+  document.body.appendChild(el)
+  await tick(60)
+
+  const options = document.querySelectorAll(".lmw-model-picker option")
+  assert.ok(options.length >= 2, `expected the picker to be filled, got ${options.length} option(s)`)
+})
+
 test("asks for the model list without a conditional request", async () => {
   document.body.innerHTML = ""
   const el = document.createElement("llm-meta-widget")
