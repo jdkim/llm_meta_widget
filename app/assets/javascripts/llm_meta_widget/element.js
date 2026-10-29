@@ -502,7 +502,18 @@ function boot(cfg) {
   				});
   				if (flat.length > 1) modelPicker.style.display = "";
   			}));
-  		} else if (ENABLE_MODEL_PICKER && modelPicker) {
+  		}
+  		// The hub answers with each model's context window, and every budget below
+  		// is derived from it, so ASK REGARDLESS OF THE PICKER. This used to sit
+  		// inside the picker branches: a page that pinned a model and hid the
+  		// picker — which is a sensible thing to do, and what the standalone E2E
+  		// fixture does — never learned the window at all. The resource budget then
+  		// fell to its 8 KB floor and both tool-result truncation and eviction stood
+  		// down, each returning its input unchanged without a window. No warning was
+  		// possible either, because no request was made to fail.
+  		//
+  		// Skipped only when talking straight to Ollama, which has no /api/llms.
+  		if (LLM_PROVIDER !== "ollama") {
   			// cache: "no-store" so the browser never sends a conditional request. The
   			// hub answers /api/llms with an ETag and must-revalidate, so a REPEAT visit
   			// got 304 Not Modified — and Response.ok is false for a 304, which became
@@ -528,6 +539,13 @@ function boot(cfg) {
   					// configured model is often hosted while the picker shows local ones.
   					llmsPayload = payload;
   					modelWindow = modelWindowFrom(payload, MODEL);
+
+  					// The window is the part every page needs; filling the picker is only for
+  					// pages that show one, and the code below would dereference a null picker.
+					// Without this the TypeError only skips the rest of boot, whose
+					// remaining job is the picker's change handler — so nothing a
+					// no-picker page needs. Kept for intent, not for a visible bug.
+  					if (!(ENABLE_MODEL_PICKER && modelPicker)) return;
   					var flat = [];
   					(payload.llms || []).forEach(function(llm) {
   						if (llm.family !== "ollama") return;
@@ -723,6 +741,7 @@ function boot(cfg) {
   	// call answers, and null forever if the hub is older than the field — in
   	// which case the loop budgets nothing, exactly as it always did.
   	var modelWindow = null;
+  	var warnedNoWindow = false;
   	// The /api/llms answer, kept so switching model in the picker can resolve
   	// that model's window. Without it a visitor who switches from a 262k model
   	// to a 32k one keeps the big window — no eviction, and a resource budget
@@ -1371,6 +1390,18 @@ function boot(cfg) {
   		if (!userText) return;
   		inputEl.value = "";
   		appendTurn("user", userText, pendingTurnLabel);
+
+  		// An unknown window is not a small window: every budget below then uses a
+  		// floor, and oversized tool results are neither trimmed nor evicted. Say so
+  		// once, at the moment it affects an answer. Three separate causes have led
+  		// here — a 304 read as empty, a page that hid the model picker, and a model
+  		// the hub does not list — and the first two were silent for days.
+  		if (!modelWindow && !warnedNoWindow) {
+  			warnedNoWindow = true;
+  			console.warn("[llm-meta-widget] no context window known for " + MODEL +
+  			             "; reference data is budgeted at the floor and oversized tool" +
+  			             " results are not trimmed");
+  		}
 
   		// Reference data that did not fit, reported once per budget, at the moment
   		// it affects an answer rather than at boot.

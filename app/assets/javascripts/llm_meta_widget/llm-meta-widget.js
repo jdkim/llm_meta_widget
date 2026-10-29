@@ -4269,7 +4269,8 @@ function boot(cfg) {
         });
         if (flat.length > 1) modelPicker.style.display = "";
       }));
-    } else if (ENABLE_MODEL_PICKER && modelPicker) {
+    }
+    if (LLM_PROVIDER !== "ollama") {
       tasks.push(fetch(LLM_BASE + "/api/llms", { headers: { "Accept": "application/json" }, cache: "no-store" }).then(function(r) {
         if (r.ok) return r.json();
         console.warn("[llm-meta-widget] /api/llms answered " + r.status + "; the model context window is unknown, so reference data is budgeted at the floor and oversized tool results are not trimmed");
@@ -4277,6 +4278,7 @@ function boot(cfg) {
       }).then(function(payload) {
         llmsPayload = payload;
         modelWindow = modelWindowFrom(payload, MODEL);
+        if (!(ENABLE_MODEL_PICKER && modelPicker)) return;
         var flat = [];
         (payload.llms || []).forEach(function(llm) {
           if (llm.family !== "ollama") return;
@@ -4425,6 +4427,7 @@ function boot(cfg) {
     return Object.assign({}, p, { source: "page" });
   });
   var modelWindow = null;
+  var warnedNoWindow = false;
   var llmsPayload = null;
   var resourceContext = null;
   var resourcePlan = null;
@@ -4868,6 +4871,10 @@ function boot(cfg) {
     if (!userText) return;
     inputEl.value = "";
     appendTurn("user", userText, pendingTurnLabel);
+    if (!modelWindow && !warnedNoWindow) {
+      warnedNoWindow = true;
+      console.warn("[llm-meta-widget] no context window known for " + MODEL + "; reference data is budgeted at the floor and oversized tool results are not trimmed");
+    }
     pageResourcePlansNow();
     if (skippedResources.length && !announcedSkips) {
       announcedSkips = true;
