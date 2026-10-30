@@ -78,9 +78,10 @@ HUB_URL=http://localhost:3000 MODEL=gpt-oss-120b \
 
 The model must support tools and be permitted by the hub's anonymous policy.
 `MCP_SERVER` (default TogoMCP), `MCP_TOOL` (default TogoMCP_Usage_Guide),
-`WIDGET_PORT` (default 3001), `E2E_TIMEOUT` (seconds, default 600), and
+`WIDGET_PORT` (default 0, an automatically selected free port), `E2E_TIMEOUT` (seconds, default 600), and
 `E2E_OUTPUT_DIR` are configurable. The live hub must allow the fixture's exact
-origin, `http://127.0.0.1:3001`, in CORS. This run consumes real model/tool usage.
+origin in CORS. Set `WIDGET_PORT=3001` (or another available port) when
+a fixed CORS origin such as `http://127.0.0.1:3001` is required. This run consumes real model/tool usage.
 Only use an environment you are authorized to exercise.
 
 For deterministic wiring checks without any live model or MCP server:
@@ -113,3 +114,5 @@ Automatic Selenium runs additionally write `summary.json` (marked mock/live) and
 `remote_tool.png`. Captures contain prompts and full tool results; authorization
 values are redacted, and authenticated requests fail validation. Keep artifacts
 out of version control. Each run overwrites the output directory's evidence.
+
+The wire validator exits 1 for a failed behavioral assertion and 2 for a malformed capture.

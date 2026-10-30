@@ -13,7 +13,7 @@ MCP_TOOL = ENV.fetch("MCP_TOOL", "TogoMCP_Usage_Guide")
 MOCK = ENV["MOCK_HUB"] == "1"
 FileUtils.mkdir_p(OUT)
 FileUtils.rm_f(File.join(OUT, "wire.json"))
-server = TCPServer.new("127.0.0.1", Integer(ENV.fetch("WIDGET_PORT", "3001")))
+server = TCPServer.new("127.0.0.1", Integer(ENV.fetch("WIDGET_PORT", "0")))
 origin = "http://127.0.0.1:#{server.addr[1]}"
 hub = MOCK ? "#{origin}/hub" : ENV.fetch("HUB_URL", "http://localhost:3000")
 prompt = "Call #{MCP_TOOL} once with empty arguments. Summarize its result in three short Japanese bullet points. Do not call other tools."
