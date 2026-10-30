@@ -15,8 +15,9 @@ wire = [
       { "role" => "tool", "tool_call_id" => "c1", "name" => call["name"], "content" => JSON.generate(result) }
     ] }, "response" => frame.call("done", { "content" => "ガイドの要約", "finish_reason" => "stop" }) }
 ]
+# Keep this count in sync with the mutations: each new check needs a failing case.
 summary = RemoteToolWire.validate(wire)
-raise "Expected all wire checks" unless summary[:checks].size == 14 && summary[:checks].values.all?
+raise "Expected all wire checks" unless summary[:checks].size == 15 && summary[:checks].values.all?
 puts "ok: complete anonymous round trip with a 117KB Unicode result"
 mutations = {
   missing_llm: ->(w) { w.pop },
@@ -25,6 +26,7 @@ mutations = {
   http_error: ->(w) { w[1]["status"] = 429 },
   forced_context: ->(w) { w[0]["body"]["generation_settings"] = { "options" => { "num_ctx" => 65536 } } },
   wrong_tool: ->(w) { w[0]["response"] = w[0]["response"].sub("TogoMCP_Usage_Guide", "other") },
+  missing_call_id: ->(w) { w[0]["response"] = w[0]["response"].sub(%q{"id":"c1"}, %q{"id":""}); w[2]["body"]["messages"][0]["tool_calls"][0]["id"] = ""; w[2]["body"]["messages"][1]["tool_call_id"] = "" },
   wrong_selected_id: ->(w) { w[0]["body"]["tool_ids"] = [2] },
   wrong_order: ->(w) { w[0], w[1] = w[1], w[0] },
   wrong_arguments: ->(w) { w[1]["body"]["arguments"] = { "unexpected" => true } },
@@ -45,4 +47,16 @@ mutations.each do |name, mutate|
     next
   end
   raise "Validator accepted #{name}"
+end
+
+allowed = Marshal.load(Marshal.dump(wire))
+allowed[0]["body"]["generation_settings"] = { "temperature" => 0.2, "options" => { "num_predict" => 1024 } }
+RemoteToolWire.validate(allowed)
+puts "ok: permits generation settings unrelated to context size"
+begin
+  RemoteToolWire.validate([{}])
+rescue RemoteToolWire::MalformedCapture
+  puts "ok: distinguishes malformed captures from failed assertions"
+else
+  raise "Malformed capture was accepted"
 end
