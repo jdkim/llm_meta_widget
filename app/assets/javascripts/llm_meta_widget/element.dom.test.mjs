@@ -1102,6 +1102,85 @@ test("still fills the picker when the page shows one", async () => {
   assert.ok(options.length >= 2, `expected the picker to be filled, got ${options.length} option(s)`)
 })
 
+// --- configuration matrix -----------------------------------------------------
+//
+// Our mounts had drifted into ONE configuration: ten of them used the same three
+// attributes, and five of the widget's fifteen knobs had never been varied by
+// any test. The bug fixed in 0.15.2 lived in a branch reachable only through
+// `enable-model-picker`, which no test had ever set — an outside author set it
+// in his fixture because pinning a model and hiding the picker is sensible, and
+// that is how it surfaced. Nobody's assertion caught it; a different
+// CONFIGURATION exposed it.
+//
+// So these are the real attribute sets from the live adopter pages, carried
+// verbatim including attributes we do not define (a page may have extras, and
+// ignoring them is part of the contract). Each gets only invariants that must
+// hold in every configuration, which keeps the matrix cheap to extend.
+const ADOPTER_CONFIGS = {
+  "pubdictionaries.org": {
+    "llm-url": HUB, "tool-hub-url": HUB, model: "m1", "llm-provider": "llm_meta_server",
+    "api-key-uuid": "free-models", "max-rounds": "12", "actions-schema-id": "ai-actions",
+    "page-card-id": "ai-page", "state-global": "aiState", "actions-global": "aiActions",
+    "prompts-global": "aiPrompts", "resources-global": "aiResources",
+    "remote-tools-schema-id": "remote-mcp-tools"
+  },
+  // Hides the picker — the configuration that broke — and carries four
+  // attributes only its own fork defines.
+  "togomcp.rdfportal.org": {
+    "chat-title": "TogoMCP Trial", "llm-url": HUB, "tool-hub-url": HUB, model: "m1",
+    "hub-tools": "big", "default-hub-tools": "big", "auth-required": "false",
+    "enable-model-picker": "false", "well-known-urls": "", "max-rounds": "10",
+    "max-exchanges": "4"
+  },
+  "the standalone e2e fixture": {
+    "llm-url": HUB, "tool-hub-url": HUB, model: "m1", models: "m1", "hub-tools": "big",
+    "well-known-urls": "", "max-rounds": "4", "enable-model-picker": "false"
+  }
+}
+
+for (const [ page, attrs ] of Object.entries(ADOPTER_CONFIGS)) {
+  async function mountAndTurn() {
+    hubLlms = { llms: [ { family: "bedrock", models: [
+      { name: "m1", supports_tools: true, max_input_tokens: 128000 }
+    ] } ] }
+    document.body.innerHTML = ""
+    const el = document.createElement("llm-meta-widget")
+    for (const [ k, v ] of Object.entries(attrs)) el.setAttribute(k, v)
+    document.body.appendChild(el)
+    await tick(60)
+    const panel = document.getElementById("llm-meta-widget-chat")
+    const input = panel.querySelector(".lmw-input")
+    input.value = "hello"
+    input.dispatchEvent(new window.Event("input", { bubbles: true }))
+    panel.querySelector(".lmw-form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))
+    await tick(120)
+  }
+
+  // The invariant 0.15.2 is about: a configuration either learns the window or
+  // says it could not. Silence with a floor is the state that hid for days.
+  test(`${page}: learns the context window, or says it could not`, async () => {
+    const said = []
+    const realWarn = console.warn
+    console.warn = (m) => said.push(String(m))
+    try {
+      await mountAndTurn()
+    } finally {
+      console.warn = realWarn
+    }
+
+    const askedForModels = fetchLog.some((c) => c.url.includes("/api/llms"))
+    const complained = /no context window known/.test(said.join(" "))
+    assert.ok(askedForModels || complained,
+              "neither asked the hub for the window nor reported that it has none")
+  })
+
+  test(`${page}: can send a turn`, async () => {
+    await mountAndTurn()
+
+    assert.ok(sentBodies.length > 0, "this configuration cannot hold a conversation at all")
+  })
+}
+
 test("asks for the model list without a conditional request", async () => {
   document.body.innerHTML = ""
   const el = document.createElement("llm-meta-widget")
